@@ -1,4 +1,14 @@
 //@version=4
+//  ||-------------------------------------------------------------------------||
+//  ||  author: Kenneth Gottlieb
+//  ||-------------------------------------------------------------------------||
+//  ||  description:
+//  ||      • Use Peaks and EMA to Identify Support and Resistance Levels
+//  ||-------------------------------------------------------------------------||
+// 	|| This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//	|| © drmrboyc (Kenneth Gottlieb)
+//  ||-------------------------------------------------------------------------||
+
 strategy("StochRSI Tests", shorttitle="Stoch-RSI Backtester", initial_capital=20000,
   default_qty_type=strategy.percent_of_equity, default_qty_value=100.0, currency='USD',
   commission_type=strategy.commission.percent, commission_value=.08, overlay=false)
