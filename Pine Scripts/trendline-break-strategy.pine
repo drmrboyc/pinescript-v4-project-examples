@@ -1,0 +1,695 @@
+//@version=4
+strategy("Trendline Break Strategy", shorttitle="Trendline Break Strategy", max_bars_back=1000,
+  initial_capital=20000, default_qty_type=strategy.percent_of_equity, default_qty_value=100.0,
+  currency='USD', commission_type=strategy.commission.percent, commission_value=.00, overlay=true)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ INPUTS
+
+//  BARS AGO TO START LOOKING FOR A TREND OF PIVOTS
+BARS_AGO_START_LOOKING  = input(defval=0, title="Look for Pivot at X Bars Ago", type=input.integer)
+
+//  CANDLES TO DEFINE A PIVOT
+CANDLES_ON_SIDE_PIVOT   = input(defval=2, title='Candles On Each Side for Pivot', type=input.integer)
+
+//  EXIT ON CROSSOVER OF SMA
+USE_SMA_CROSS_EXIT      = input(title="=====  FLAG: Exit on SMA Cross", defval=false)
+SMA_VALUE               = input(defval=30, title='SMA Value', type=input.integer)
+SMA_SMALL_VALUE         = input(defval=13, title='SMA Value', type=input.integer)
+
+//  STOP LOSS
+USE_STOPLOSS            = input(title="=====  FLAG: Use Stop Loss at Entry", defval=false)
+STOPLOSS_PCT            = input(defval=100.0, title='Stop Loss % of ATR')
+STOPLOSS_ATR_LENGTH     = input(defval=14, title='Stop Loss ATR Length', type=input.integer)
+
+//  ENTRY ACTIVATED TRAILING STOP
+USE_ENTRY_TRAILINGSTOP        = input(title="=====  FLAG: Use Trailing-Stop at Entry", defval=true)
+ENTRY_TRAILINGSTOP_PCT        = input(defval=200.0, title='Entry Trailing-Stop % of ATR')
+ENTRY_TRAILINGSTOP_ATR_LENGTH = input(defval=14, title='Entry Trailing-Stop ATR Length', type=input.integer)
+
+//  TRAILING STOP
+USE_TRAILINGSTOP        = input(title="=====  FLAG: Use PT Trailing-Stop", defval=false)
+TRAILINGSTOP_PCT_PROFIT = input(defval=10.0, title="% Profit Target to Triggers the Trailing Stop")
+TRAILINGSTOP_PCT        = input(defval=100.0, title='PT Trailing-Stop % of ATR')
+TRAILINGSTOP_ATR_LENGTH = input(defval=14, title='PT Trailing-Stop ATR Length', type=input.integer)
+
+//  BACKTESTING DATE RANGE
+USE_CUSTOM_DATE_RANGE   = input(title="=====  FLAG: Use Date Range Only", defval=true)
+START_YEAR              = input(defval=2019, title='Backtest Start Year', type=input.integer)
+START_MONTH             = input(defval=01, title='Backtest Start Month', type=input.integer)
+START_DAY               = input(defval=01, title='Backtest Start Day', type=input.integer)
+END_YEAR                = input(defval=2020, title='Backtest End Year', type=input.integer)
+END_MONTH               = input(defval=01, title='Backtest End Month', type=input.integer)
+END_DAY                 = input(defval=01, title='Backtest End Day', type=input.integer)
+
+//  OPEN AND CLOSE INSTEAD OF HIGH AND LOW FOR FRACTALS
+FR_USE_OPEN_CLOSE       = input(title="=====  FLAG: Use Open / Close for Fractals", defval=false)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ USER FUNCTIONS
+
+f_is_fractal_high(_len, _series) =>
+    p = nz(_series[_len])
+    fIsFrHigh = true
+    for c = 0 to _len - 1
+        if (_series[c] > p)
+            fIsFrHigh := false
+    for c = _len + 1 to 2 * _len
+        if (_series[c] > p)
+            fIsFrHigh := false
+    _return = fIsFrHigh
+
+f_is_fractal_low(_len, _series) =>
+    p = nz(_series[_len])
+    fIsFrLow = true
+    for c = 0 to _len - 1
+        if (_series[c] < p)
+            fIsFrLow := false
+    for c = _len + 1 to 2 * _len
+        if (_series[c] < p)
+            fIsFrLow := false
+    _return = fIsFrLow
+
+f_highestbars(_src, _len) =>
+    int _index = 0
+    _highest = 0.0
+    for _i = 0 to _len-1
+        if _src[_i] >= _highest
+            _highest := _src[_i]
+            _index := _i
+    _index
+
+f_lowestbars(_src, _len) =>
+    int _index = 0
+    _lowest = 10e20
+    for _i = 0 to _len-1
+        if _src[_i] <= _lowest
+            _lowest := _src[_i]
+            _index := _i
+    _index
+
+f_highest_slope(_src, _cand1, _len) =>
+    var int highCand = 0
+    var float curY = 0.0
+    var float prevY = 0.0
+    var float slope = 0.0
+    var float yIntcpt = 0.0
+    if (_len <= 0 or nz(_src[_cand1]))
+        float(na)
+    else
+        for c = 0 to _len
+            prevY := curY
+            slope := (_src[c] - _src[_cand1]) / (bar_index[c] - _cand1)
+            yIntcpt := _src[_cand1] - (slope * _cand1)
+            curY := (slope * c) + yIntcpt
+            highCand := curY > prevY ? bar_index[c] : highCand
+    highCand
+
+f_slope(src, cand1, cand2) =>
+    if (cand1 <= 0 or cand2 <= 0 or cand2 <= cand1)
+        float(na)
+    else
+        (src[cand2] - src[cand1]) / (cand2 - cand1)
+
+f_y_intercept(src, cand1, slope) =>
+    if (cand1 <= 0)
+        float(na)
+    else
+        src[cand1] - (slope * cand1)
+
+f_y(slope, y_intercept, candNum) =>
+    if (candNum <= 0)
+        float(na)
+    else
+        (slope * candNum) + y_intercept
+
+f_draw_infopanel(_x, _y, _line, _text) =>
+    _rep_text = ""
+    if barstate.islast
+        for _l = 0 to _line
+            _rep_text := _rep_text + "\n"
+        _rep_text := _rep_text + _text
+        var label _la = na
+        label.delete(_la)
+        _la := label.new(
+             x=_x, y=_y,
+             text=_rep_text, xloc=xloc.bar_time, yloc=yloc.price,
+             color=color.black, style=label.style_labelup, textcolor=color.silver, size=size.small)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ GLOBAL VARIABLES
+
+barsAgoStartLooking = BARS_AGO_START_LOOKING
+
+last = barstate.islast
+smaBig = sma(close, SMA_VALUE)
+smaSmall = sma(close, SMA_SMALL_VALUE)
+atrValue = atr(STOPLOSS_ATR_LENGTH)
+
+//  ATR for Stop Loss & Trailing Stop
+candACloseToATR = atrValue * 1.5
+stopLossSize = (STOPLOSS_PCT * .01) * atr(STOPLOSS_ATR_LENGTH)
+entryTrailingStopSize = (ENTRY_TRAILINGSTOP_PCT * .01) * atr(ENTRY_TRAILINGSTOP_ATR_LENGTH)
+trailingStopSize = (TRAILINGSTOP_PCT * .01) * atr(TRAILINGSTOP_ATR_LENGTH)
+
+var bool trailingStopTriggered = false
+
+float exitStopMultiplier = 100
+
+//  Trade ready flags
+bool readyForEntryLong = false       //  Waiting for candle after ATR Close Candle
+bool readyForEntryShort = false       //  Waiting for candle after ATR Close Candle
+
+//  Trend setup tracking variables
+int posTrnd = 0 // [0 = NONE FOUND YET], [1 = LONG], [-1 = SHORT], [-100 = TREND BROKEN]
+string brkReason = ""
+int brkReasonNum = 0
+
+// Set start and end dates for backtest
+testPeriodStart = timestamp(START_YEAR, START_MONTH, START_DAY,00,00)
+testPeriodStop = timestamp(END_YEAR, END_MONTH, END_DAY,00,00)
+
+//  Fractal values (Use High/Low or Open/Close)
+float frHighValues = 0
+float frLowValues = 0
+if (FR_USE_OPEN_CLOSE)
+    frHighValues := open[0] > close[0] ? open[0] : close[0]
+    frLowValues := open[0] < close[0] ? open[0] : close[0]
+else
+    frHighValues := high[0]
+    frLowValues := low[0]
+
+//  Get the current position's profit/loss.
+float openPosCost = abs(strategy.position_size) * nz(strategy.position_avg_price)
+float openProfitPct = (strategy.openprofit / openPosCost) * 100
+
+//  -- THE STRATEGY STATE --------------------
+//  --  0 - Waiting for trend to draw.
+//  --  1 - LONG setup is awaiting trigger.
+//  --  2 - SHORT setup is awaiting trigger.
+//  --  3 - Currently in an open position.
+//  ------------------------------------------
+var int StrategyState = 0
+
+//  If we're in a trade set the state to 3, or maintain existing states 1 & 2 (looking for a breakout), or reset state 3 back to 0.
+StrategyState := strategy.opentrades > 0 ? 3 : StrategyState != 1 and StrategyState != 2 ? 0 : StrategyState
+
+var float state_slope = 0.0
+var float state_yItcp = 0.0
+var int state_fr1 = 0
+
+//  Reset our STOPS if looking for a setup
+if (StrategyState == 0)
+    stopLossSize := 0
+    trailingStopSize := 0
+    entryTrailingStopSize := 0
+
+//  If we're not in a position our Target Profit Trailing Stop FLAG should remain off.
+if (StrategyState != 3)
+    trailingStopTriggered := false
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ HANDLE OPEN TRADES
+
+//  Activate the trailing stop if it's toggled on and we hit our target profit %.
+if (strategy.opentrades > 0 and USE_TRAILINGSTOP and openProfitPct >= TRAILINGSTOP_PCT_PROFIT)
+    strategy.cancel("Exit_STOP")
+    strategy.cancel("Exit_ENTRY_TRAILING_STOP")
+    if (strategy.position_size > 0) // Long position is open.
+        trailingStopTriggered := true
+        strategy.exit(id="Exit_TRAILING_STOP", from_entry="Long", trail_price=close, trail_offset=(trailingStopSize*exitStopMultiplier), oca_name=strategy.oca.cancel)
+    else    //  Short position is open.
+        trailingStopTriggered := true
+        strategy.exit(id="Exit_TRAILING_STOP", from_entry="Short", trail_price=close, trail_offset=(trailingStopSize*exitStopMultiplier), oca_name=strategy.oca.cancel)
+
+//((strategy.position_entry_name == "Long" and close <= smaBig) or (strategy.position_entry_name == "Short" and close >= smaBig))
+smaCrossedAbove = crossover(smaSmall, smaBig)
+smaCrossedBelow = crossunder(smaSmall, smaBig)
+smaCrossCondition = USE_SMA_CROSS_EXIT and ((strategy.position_size > 0 and smaCrossedBelow) or (strategy.position_size < 0 and smaCrossedAbove))
+
+if (strategy.opentrades > 0 )
+    strategy.close_all( smaCrossCondition )
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ LOOKING FOR BREAKOUT
+
+//  If we have a trend line already, look for the break out above/below that line at the CLOSE of each candle.
+float curCandY = (state_slope * bar_index) + state_yItcp
+
+if (StrategyState == 1)
+    bool brokeAbove = close > curCandY
+    readyForEntryLong := brokeAbove
+
+if (StrategyState == 2)
+    bool brokeBelow = close < curCandY
+    readyForEntryShort := brokeBelow
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ ENTER THE TRADE
+
+if (strategy.opentrades == 0 and readyForEntryLong)
+    strategy.entry("Long", long=strategy.long, stop=(close + syminfo.mintick), when=readyForEntryLong)
+    StrategyState := 3
+    if (USE_ENTRY_TRAILINGSTOP)
+        strategy.exit(id="Exit_ENTRY_TRAILING_STOP", from_entry="Long", trail_points=0, trail_offset=(entryTrailingStopSize*exitStopMultiplier), oca_name=strategy.oca.cancel)
+    if (USE_STOPLOSS)
+        strategy.exit(id="Exit_STOP", from_entry="Long", loss=(stopLossSize*exitStopMultiplier), oca_name=strategy.oca.cancel)
+
+if (strategy.opentrades == 0 and readyForEntryShort)
+    strategy.entry("Short", long=strategy.short, stop=(close - syminfo.mintick), when=readyForEntryShort)
+    StrategyState := 3
+    if (USE_ENTRY_TRAILINGSTOP)
+        strategy.exit(id="Exit_ENTRY_TRAILING_STOP", from_entry="Short", trail_points=0, trail_offset=(entryTrailingStopSize*exitStopMultiplier), oca_name=strategy.oca.cancel)
+    if (USE_STOPLOSS)
+        strategy.exit(id="Exit_STOP", from_entry="Short", loss=(stopLossSize*exitStopMultiplier), oca_name=strategy.oca.cancel)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ GET FRACTALS
+
+isFractalH = f_is_fractal_high(CANDLES_ON_SIDE_PIVOT, frHighValues)
+isFractalL = f_is_fractal_low(CANDLES_ON_SIDE_PIVOT, frLowValues)
+
+int fr1Bar = 0
+int fr2Bar = 0
+int fr3Bar = 0
+int fr4Bar = 0
+int fr5Bar = 0
+int fr1Type = 0
+int fr2Type = 0
+int fr3Type = 0
+int fr4Type = 0
+int fr5Type = 0
+float fr1Value = 0
+float fr2Value = 0
+float fr3Value = 0
+float fr4Value = 0
+float fr5Value = 0
+loopDone = 0
+
+//  Going backward grab the five most recent fractals and choose the largest of side by side like fractals.
+for i = barsAgoStartLooking to 200
+    if (loopDone != 0 or bar_index < 200)
+        break
+    if (isFractalH[i])
+        if (fr1Bar == 0)
+            fr1Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+            fr1Type := 1
+            fr1Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr2Bar == 0)
+            if (fr1Type == 1)
+                if (frHighValues[i+CANDLES_ON_SIDE_PIVOT] >= fr1Value)
+                    fr1Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr1Type := 1
+                    fr1Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr2Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr2Type := 1
+                fr2Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr3Bar == 0)
+            if (fr2Type == 1)
+                if (frHighValues[i+CANDLES_ON_SIDE_PIVOT] >= fr2Value)
+                    fr2Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr2Type := 1
+                    fr2Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr3Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr3Type := 1
+                fr3Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr4Bar == 0)
+            if (fr3Type == 1)
+                if (frHighValues[i+CANDLES_ON_SIDE_PIVOT] >= fr3Value)
+                    fr3Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr3Type := 1
+                    fr3Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr4Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr4Type := 1
+                fr4Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr5Bar == 0)
+            if (fr4Type == 1)
+                if (frHighValues[i+CANDLES_ON_SIDE_PIVOT] >= fr4Value)
+                    fr4Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr4Type := 1
+                    fr4Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr5Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr5Type := 1
+                fr5Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr5Bar != 0)
+            if (fr5Type == 1)
+                if (frHighValues[i+CANDLES_ON_SIDE_PIVOT] >= fr5Value)
+                    fr5Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr5Type := 1
+                    fr5Value := frHighValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                loopDone := 1
+            continue
+    if (isFractalL[i])
+        if (fr1Bar == 0)
+            fr1Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+            fr1Type := -1
+            fr1Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr2Bar == 0)
+            if (fr1Type == -1)
+                if (frLowValues[i+CANDLES_ON_SIDE_PIVOT] <= fr1Value)
+                    fr1Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr1Type := -1
+                    fr1Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr2Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr2Type := -1
+                fr2Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr3Bar == 0)
+            if (fr2Type == -1)
+                if (frLowValues[i+CANDLES_ON_SIDE_PIVOT] <= fr2Value)
+                    fr2Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr2Type := -1
+                    fr2Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr3Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr3Type := -1
+                fr3Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr4Bar == 0)
+            if (fr3Type == -1)
+                if (frLowValues[i+CANDLES_ON_SIDE_PIVOT] <= fr3Value)
+                    fr3Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr3Type := -1
+                    fr3Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr4Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr4Type := -1
+                fr4Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr5Bar == 0)
+            if (fr4Type == -1)
+                if (frLowValues[i+CANDLES_ON_SIDE_PIVOT] <= fr4Value)
+                    fr4Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr4Type := -1
+                    fr4Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                fr5Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                fr5Type := -1
+                fr5Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            continue
+        if (fr5Bar != 0)
+            if (fr5Type == -1)
+                if (frLowValues[i+CANDLES_ON_SIDE_PIVOT] <= fr5Value)
+                    fr5Bar := bar_index[i+CANDLES_ON_SIDE_PIVOT]
+                    fr5Type := -1
+                    fr5Value := frLowValues[i+CANDLES_ON_SIDE_PIVOT]
+            else
+                loopDone := 1
+            continue
+
+int barsAgoFr1 = bar_index - fr1Bar
+int barsAgoFr2 = bar_index - fr2Bar
+int barsAgoFr3 = bar_index - fr3Bar
+int barsAgoFr4 = bar_index - fr4Bar
+int barsAgoFr5 = bar_index - fr5Bar
+
+int highBarsAgoSinceFr1 = f_highestbars(high, barsAgoFr1 > 0 ? barsAgoFr1 : 1)
+int lowBarsAgoSinceFr1 = f_lowestbars(low, barsAgoFr1 > 0 ? barsAgoFr1 : 1)
+
+int highBarSinceFr1 = bar_index - highBarsAgoSinceFr1
+int lowBarSinceFr1 = bar_index - lowBarsAgoSinceFr1
+
+float highValueSinceFr1 = high[highBarsAgoSinceFr1]
+float lowValueSinceFr1 = low[lowBarsAgoSinceFr1]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ ESTABLISH FRACTAL TREND
+
+frTrendingUp = fr1Value > fr3Value and fr2Value > fr4Value
+frTrendingDown = fr1Value < fr3Value and fr2Value < fr4Value
+
+posTrnd := frTrendingUp ? 1 : frTrendingDown ? -1 : -100
+brkReason := posTrnd == -100 ? "Pivots are not trending." : ""
+brkReasonNum := brkReasonNum != 0 ? brkReasonNum : posTrnd == -100 ? 1 : 0
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ MOST RECENT PIVOT
+
+// The most recent pivot has to be in the same direction as the trend.
+lastPivotSameDirection = posTrnd == fr1Type
+
+posTrnd := posTrnd == -100 ? posTrnd : lastPivotSameDirection ? posTrnd : -100
+brkReason := brkReason != "" ? brkReason : posTrnd == -100 ? "The most recent pivot is in the wrong direction." : ""
+brkReasonNum := brkReasonNum != 0 ? brkReasonNum : posTrnd == -100 ? 2 : 0
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ CANDLE RANGE OVER PIVOT
+
+//  No candle since the last pivot can have a range past the fractal's range.
+candRangePastPivot = (posTrnd == 1 and highValueSinceFr1 >= fr1Value) or (posTrnd == -1 and lowValueSinceFr1 <= fr1Value)
+
+posTrnd := posTrnd == -100 ? posTrnd : not candRangePastPivot ? posTrnd : -100
+brkReason := brkReason != "" ? brkReason : posTrnd == -100 ? "A candle since the most recent pivot has a range that is past that pivot's range." : ""
+brkReasonNum := brkReasonNum != 0 ? brkReasonNum : posTrnd == -100 ? 3 : 0
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ BACKTESTING DATE RANGE
+
+//  True when we're within a time period that a new position can be openend.
+withinBacktestDates = not USE_CUSTOM_DATE_RANGE or (USE_CUSTOM_DATE_RANGE and time >= testPeriodStart and time <= testPeriodStop)
+
+posTrnd := posTrnd == -100 ? posTrnd : withinBacktestDates ? posTrnd : -100
+brkReason := brkReason != "" ? brkReason : posTrnd == -100 ? "Outside of backtesting dates." : ""
+brkReasonNum := brkReasonNum != 0 ? brkReasonNum : posTrnd == -100 ? 4 : 0
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ DEFINE THE TREND
+
+validUPSetup = posTrnd == 1 and StrategyState == 0 ? true : false
+validDOWNSetup = posTrnd == -1 and StrategyState == 0 ? true : false
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ GET BEST SLOPE POINT
+
+slopeSrc = validUPSetup ? high : validDOWNSetup ? low : na
+
+float upSlope = 0.0
+float upYIntcpt = 0.0
+float upCurY = 0.0
+float highestY = 0.0
+
+float highSlope = 0.0
+float highYIntcpt = 0.0
+int highTrendCand = 0
+float highTrendValue = 0.0
+
+if (validUPSetup)
+    for upCnd = 0 to barsAgoFr1
+        upSlope := (high[upCnd] - fr1Value) / (bar_index[upCnd] - fr1Bar)
+        upYIntcpt := fr1Value - (upSlope * fr1Bar)
+        upCurY := (upSlope * bar_index) + upYIntcpt
+        if (upCurY > highestY)
+            highestY := upCurY
+            highTrendCand := bar_index[upCnd]
+            highSlope := upSlope
+            highYIntcpt := upYIntcpt
+
+    highTrendValue := high[bar_index-highTrendCand]
+
+float downSlope = 0.0
+float downYIntcpt = 0.0
+float downCurY = 0.0
+float lowestY = 999999.0
+
+float lowSlope = 0.0
+float lowYIntcpt = 0.0
+int lowTrendCand = 0
+float lowTrendValue = 999999.0
+
+if (validDOWNSetup)
+    for downCnd = 0 to barsAgoFr1
+        downSlope := (low[downCnd] - fr1Value) / (bar_index[downCnd] - fr1Bar)
+        downYIntcpt := fr1Value - (downSlope * fr1Bar)
+        downCurY := (downSlope * bar_index) + downYIntcpt
+        if (downCurY < lowestY)
+            lowestY := downCurY
+            lowTrendCand := bar_index[downCnd]
+            lowSlope := downSlope
+            lowYIntcpt := downYIntcpt
+
+    lowTrendValue := low[bar_index-lowTrendCand]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ SAVE STATE VARIABLES
+
+if (validUPSetup or validDOWNSetup)
+    state_slope := validUPSetup ? highSlope : lowSlope
+    state_yItcp := validUPSetup ? highYIntcpt : lowYIntcpt
+    state_fr1 := fr1Bar
+    StrategyState := validUPSetup ? 1 : 2
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ DRAW TREND LINE
+
+var line trendLine = na
+
+bool newLineFound = false
+bool updatedLine = false
+int newCand = 0
+int updatedCand = 0
+
+//  If we're drawing a line for an existing trend, then delete the last one.
+if (validUPSetup)
+    trendLine := line.new(fr1Bar, fr1Value, highTrendCand, highTrendValue, extend=extend.right, color=color.green)
+    newCand := highBarSinceFr1
+    newLineFound := true
+
+if (validDOWNSetup)
+    trendLine := line.new(fr1Bar, fr1Value, lowTrendCand, lowTrendValue, extend=extend.right, color=color.red)
+    newCand := highBarSinceFr1
+    newLineFound := true
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ PLOTS
+
+plotchar(bar_index, "Bar Index", "", location = location.top, color = color.silver)
+
+plotchar(readyForEntryLong, "LONG ENTRY FOUND!", "", location = location.top, color = color.lime)
+plotchar(readyForEntryShort, "SHORT ENTRY FOUND!", "", location = location.top, color = color.red)
+
+plotchar(smaCrossCondition, "~~~ SMA EXIT ~~~", "", location = location.top, color = color.yellow)
+plot(smaBig,  "Big SMA", color = color.yellow)
+plot(smaSmall,  "Small SMA", color = color.fuchsia)
+plotchar(smaCrossedAbove, "SMA Cross ABOVE", "", color = color.green)
+plotchar(smaCrossedBelow, "SMA Cross BELOW", "", color = color.red)
+
+plotchar(StrategyState, "~~~ STATE ~~~", "", location = location.top, color = color.blue)
+plotchar(curCandY, "Cursor Cand Incpt", "", location = location.top, color = color.blue)
+//plotchar(state_slope, "State Slope", "", location = location.top, color = color.blue)
+//plotchar(state_yItcp, "State Y-Incpt", "", location = location.top, color = color.blue)
+plotchar(strategy.position_size, "Position Size", "", location = location.top, color = color.blue)
+plotchar(strategy.position_avg_price, "Entry Chart Price", "", location = location.top, color = color.blue)
+plotchar(strategy.openprofit, "Open Profit in $", "", location = location.top, color = color.blue)
+plotchar(openProfitPct, "Open Profit in %", "", location = location.top, color = color.blue)
+
+plotchar(StrategyState, "~~~ SL & TS INFO ~~~", "", location = location.top, color = color.green)
+plotchar(stopLossSize * exitStopMultiplier, "Stop Loss Pips (.01)", "", location = location.top, color = color.green)
+plotchar(entryTrailingStopSize * exitStopMultiplier, "Entry TS Pips (.01)", "", location = location.top, color = color.green)
+plotchar(trailingStopTriggered, "Profit TS Triggered", "", location = location.top, color = color.lime)
+plotchar(trailingStopSize*exitStopMultiplier, "Profit TS Pips (.01)", "", location = location.top, color = color.lime)
+
+plotchar(atrValue, "~~~ TREND LINE ~~~", "", location = location.top, color = color.yellow)
+plotchar(newLineFound, "New Line Found", "", location = location.top, color = color.yellow)
+plotchar(newCand, "New Cand Index", "", location = location.top, color = color.yellow)
+//plotchar(highTrendCand,  "H-Trnd Bar #", "", location = location.top,   color = color.green)
+//plotchar(highTrendValue,  "H-Trnd Bar Val", "", location = location.top,   color = color.green)
+//plotchar(lowTrendCand,  "L-Trnd Bar #", "", location = location.top,   color = color.red)
+//plotchar(lowTrendValue,  "L-Trnd Bar Val", "", location = location.top,   color = color.red)
+
+plotchar(validUPSetup,  "~~~ UP SETUP ~~~", "", location = location.top,   color = color.green)
+//plotchar(highBarsAgoSinceFr1,  "# H-Brs since Fr1", "", location = location.top,   color = color.green)
+//plotchar(highBarSinceFr1,  "H-Br Index #", "", location = location.top,   color = color.green)
+plotchar(highValueSinceFr1,  "Hghst Val since Fr1", "", location = location.top,   color = color.green)
+plotchar(isFractalH, "High Pvt 3 Brs Ago", "", location = location.top, color = color.green)
+//plotchar(highSlope,  "Up Slope", "", location = location.top,   color = color.green)
+
+plotchar(validDOWNSetup,  "~~~ DOWN SETUP ~~~", "", location = location.top,   color = color.red)
+//plotchar(lowBarsAgoSinceFr1,  "# L-Brs since Fr1", "", location = location.top,   color = color.red)
+//plotchar(lowBarSinceFr1,  "L-Br Index #", "", location = location.top,   color = color.red)
+plotchar(lowValueSinceFr1,  "Lwst Val since Fr1", "", location = location.top,   color = color.red)
+plotchar(isFractalL, "Low Pvt 3 Brs Ago", "", location = location.top, color = color.red)
+//plotchar(lowSlope,  "Down Slope", "", location = location.top,   color = color.red)
+
+// plotchar(atrValue, "~~~ ATR ~~~", "", location = location.top, color = color.yellow)
+// plotchar(minPeakDelta, "Min Peak Delta", "", location = location.top, color = color.yellow)
+
+// plotchar(dailyOpenGapIsUp, "~~~ GAP IS UP ~~~", "", location = location.top, color = color.silver)
+// plotchar(prev_daily_close, "Prev Day Close", "", location = location.top, color = color.silver)
+// plotchar(cur_daily_open, "Cur Day Open", "", location = location.top, color = color.silver)
+
+plotchar(frTrendingUp,  "Frs Trend UP", "", location = location.top,   color = color.green)
+// //plotchar(smaBigTrendUp, "SMA Trend Up", "", location = location.top, color = color.green)
+// plotchar(frMATrendUp,  "Frs Above 50 SMA", "", location = location.top,   color = color.green)
+// plotchar(foundMACloseUptrend, " --> Cand A Found", "", location = location.top, color = color.green)
+
+
+plotchar(frTrendingDown,  "Frs Trend DOWN", "", location = location.top,   color = color.red)
+// //plotchar(smaBigTrendDown,  "SMA Trend Down", "", location = location.top,   color = color.red)
+// plotchar(frMATrendDown,  "Frs Below 50 SMA", "", location = location.top,   color = color.red)
+// plotchar(foundMACloseDowntrend, " --> Cand A Found", "", location = location.top, color = color.red)
+
+plotchar(fr5Bar > 0, "~~~~ FRACTALS ~~~~", "", location = location.top, color = color.silver)
+plotchar(brkReasonNum, "NO-TREND REASON #: ", "", location = location.top, color = color.yellow)
+plotchar(fr1Bar,  "fr1Bar", "", location = location.top,   color = color.blue)
+//plotchar(fr1Type, "fr1Type", "", location = location.top,  color = color.blue)
+plotchar(fr1Value,  "fr1Value", "", location = location.top, color = color.blue)
+
+plotchar(fr2Bar,  "fr2Bar", "", location = location.top,   color = color.green)
+//plotchar(fr2Type, "fr2Type", "", location = location.top,  color = color.green)
+plotchar(fr2Value,  "fr2Value", "", location = location.top, color = color.green)
+
+plotchar(fr3Bar,  "fr3Bar", "", location = location.top,   color = color.red)
+//plotchar(fr3Type, "fr3Type", "", location = location.top,  color = color.red)
+plotchar(fr3Value,  "fr3Value", "", location = location.top, color = color.red)
+
+plotchar(fr4Bar,  "fr4Bar", "", location = location.top,   color = color.purple)
+//plotchar(fr4Type, "fr4Type", "", location = location.top,  color = color.purple)
+plotchar(fr4Value,  "fr4Value", "", location = location.top, color = color.purple)
+
+//plotchar(fr5Bar,  "fr5Bar", "", location = location.top,   color = color.yellow)
+//plotchar(fr5Type, "fr5Type", "", location = location.top,  color = color.yellow)
+//plotchar(fr5Value,  "fr5Value", "", location = location.top, color = color.yellow)
+
+ln1 = line.new(fr1Bar, fr1Value, fr2Bar, fr2Value, color=color.lime, style=line.style_solid, width=3)
+ln2 = line.new(fr2Bar, fr2Value, fr3Bar, fr3Value, color=color.lime, style=line.style_solid, width=3)
+ln3 = line.new(fr3Bar, fr3Value, fr4Bar, fr4Value, color=color.lime, style=line.style_solid, width=3)
+//ln4 = line.new(fr4Bar, fr4Value, fr5Bar, fr5Value, color=color.lime, style=line.style_solid, width=3)
+line.delete(ln1[1])
+line.delete(ln2[1])
+line.delete(ln3[1])
+//line.delete(ln4[1])
+
+lblString = "No Trend Exists"
+lblLoc = yloc.abovebar
+lblStyle = label.style_labeldown
+lblColor = color.yellow
+
+if (validUPSetup)
+    lblString := "UP Trend Found!"
+    lblColor := color.lime
+if (validDOWNSetup)
+    lblString := "DOWN Trend Found!"
+    lblLoc := yloc.belowbar
+    lblStyle := label.style_labelup
+    lblColor := #f70d1a
+
+lbl = label.new(bar_index, high, text=lblString, style=lblStyle, yloc=lblLoc, color=lblColor)
+label.delete(lbl[1])
+
+plotshape(readyForEntryLong, style=shape.triangleup, location=location.abovebar, color=color.lime, size=size.large)
+plotshape(readyForEntryShort, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.large)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ DRAW INFORMATION LABEL
+
+lapos_x = timenow + round(change(time)*100)
+lapos_y = highest(20)
+
+title_txt = validUPSetup ? "UP TREND HAS FORMED!" : validDOWNSetup ? "DOWN TREND HAS FORMED!" : "No Active Trend"
+
+fr01 = fr1Type == 1 ? "▲" : "▼"
+fr02 = fr2Type == 2 ? "▲" : "▼"
+fr03 = fr3Type == 3 ? "▲" : "▼"
+fr04 = fr4Type == 4 ? "▲" : "▼"
+fr05 = fr5Type == 5 ? "▲" : "▼"
+fr_txt = fr01 + " _ " + fr02 + " _ " + fr03 + " _ " + fr04 + " _ " + fr05
+
+// openingGap = "" + "Opening Gap is " + (dailyOpenGapIsUp ? "↑ - Only UP Trends Allowed" : "↓ - Only DOWN Trends Allowed") +
+//              " (yesterday close: " + tostring(prev_daily_close, "#.##") + ", today open: " + tostring(cur_daily_open, "#.##") + ")"
+
+
+//  ||  character list:
+//  ||      ‖ ‗ ― — – ‒
+//  ||      ← ↑ → ↓ ↔ ↕ ↨ ─
+//  ||      │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
+//  ||      ═ ║ ╒ ╓ ╔ ╕ ╖ ╗ ╘ ╙ ╚ ╛ ╜ ╝ ╞ ╟ ╠ ╡ ╢ ╣ ╤ ╥ ╦ ╧ ╨ ╩ ╪ ╫ ╬
+//  ||
+//  ||      ▀ ▄ █ ▌ ▐ ░ ▒ ▓ ■ □ ▪ ▫ ▬ ▲ ► ▼ ◄
+//  ||      spaces: | | | | | | | | | | | |​|‌|‍|
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ 50 SMA
+
+// smaBigTrendUp = true
+// smaBigTrendDown = true
+
+// //  Loop backwards to the 4th fractal out and see make sure the 50SMA continues to climb or drop since to validate a trending sma.
+// for s = 0 to barsAgoFr4
+//     if (smaBig[s] < smaBig[s+1])
+//         smaBigTrendUp := false
+//     if (smaBig[s] > smaBig[s+1])
+//         smaBigTrendDown := false

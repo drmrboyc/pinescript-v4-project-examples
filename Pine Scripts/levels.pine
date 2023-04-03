@@ -1,0 +1,994 @@
+//@version=4
+//  ||-------------------------------------------------------------------------||
+//  ||  author: Kenneth Gottlieb
+//  ||-------------------------------------------------------------------------||
+//  ||  description:
+//  ||      • Use Peaks and EMA to Identify Support and Resistance Levels
+//  ||-------------------------------------------------------------------------||
+//  ||-------------------------------------------------------------------------||
+
+study(
+	 title = "Levels Information Panel",
+	 shorttitle = "Levels",
+     max_bars_back=1000,
+     overlay = true
+	 )
+//  ||-------------------------------------------------------------------------||
+
+//  ||  character list:
+//  ||      ‖ ‗ ― — – ‒ ─═─
+//  ||      ← ↑ → ↓ ↔ ↕ ↨ ─
+//  ||      │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
+//  ||      ═ ║ ╒ ╓ ╔ ╕ ╖ ╗ ╘ ╙ ╚ ╛ ╜ ╝ ╞ ╟ ╠ ╡ ╢ ╣ ╤ ╥ ╦ ╧ ╨ ╩ ╪ ╫ ╬
+//  ||
+//  ||      ▀ ▄ █ ▌ ▐ ░ ▒ ▓ ■ □ ▪ ▫ ▬ ▲ ► ▼ ◄
+//  ||      spaces: | | | | | | | | | | | |​|‌|‍|
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ INPUTS
+
+SECONDS_BETWEEN_CALCULATIONS = 3 // input(3, "Seconds between label redraws")
+BOX_DISTANCE = input(30, "Info Box distace from last candle")
+
+IN_PCT_DELTA_TO_RES1 = input(5, "Good Minimum % to Resistance Level 1", type=input.integer, defval=5, minval=1, maxval=100)
+
+// Panel Color Inputs
+IN_ATR_LABEL_COLOR = input(title="ATR Panel Color", defval="White", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_EMA20_LABEL_COLOR = input(title="EMA 20 Panel Color", defval="Fuchsia", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_EMA50_LABEL_COLOR = input(title="EMA 50 Panel Color", defval="Fuchsia", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_EMA200_LABEL_COLOR = input(title="EMA 200 Panel Color", defval="Fuchsia", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_PM_HIGH_LABEL_COLOR = input(title="Pre-Market High Color", defval="Orange", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_PM_LOW_LABEL_COLOR = input(title="Pre-Market Low Color", defval="Orange", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_PREV_CLOSE_LABEL_COLOR = input(title="Previous Day Close Color", defval="Orange", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_RES_ABOVE_PCT_LABEL_COLOR = input(title="Resistance Levels Above 5% Color", defval="Lime", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_RES_BELOW_PCT_LABEL_COLOR = input(title="Resistance Levels Below 5% Color", defval="Red", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_SUP_LABEL_COLOR = input(title="Support Levels Color", defval="Blue", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+
+IN_EMA20_LINE_COLOR = input(title="EMA 20 Line Color", defval="Yellow", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_EMA50_LINE_COLOR = input(title="EMA 50 Line Color", defval="Aqua", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+IN_EMA200_LINE_COLOR = input(title="EMA 200 Line Color", defval="Fuchsia", options=["Aqua", "Black", "Blue", "Fuchsia", "Gray", "Green", "Lime", "Maroon", "Navy", "Olive", "Orange", "Purple", "Red", "Silver", "Teal", "White", "Yellow"])
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ PRE & AFTER MARKET
+
+tm = time("1440","1600-1600") // 1440=60*24 is the number of minutes in a whole day. You may use "0930-1600" as second session parameter
+
+is_first = na(tm[1]) and not na(tm) or tm[1] < tm
+ending_hour = 9 //input(defval=9, title="Ending Hour", type=integer)
+ending_minute = 30 //input(defval=30, title="Ending Minute", type=integer)
+LastOnly = false //input(title="Last only", type=bool, defval=false)
+
+day_high = float(na)
+day_low = float(na)
+k = float(na)
+
+if is_first and barstate.isnew and ((hour < ending_hour or hour >= 16) or (hour == ending_hour and minute < ending_minute))
+    day_high := high
+    day_low := low
+else 
+    day_high := day_high[1]
+    day_low := day_low[1]
+
+if high > day_high and ((hour < ending_hour or hour >= 16) or (hour == ending_hour and minute < ending_minute))
+    day_high := high
+    
+if low < day_low and ((hour < ending_hour or hour >= 16) or (hour == ending_hour and minute < ending_minute))
+    day_low := low
+
+if LastOnly==true
+    k:=-9999
+else
+    k:=0
+    
+//plot(day_high, style=plot.style_circles, trackprice=true, offset=k, color=color.lime, linewidth=2)
+//plot(day_low, style=plot.style_circles, trackprice=true, offset=k, color=color.red, linewidth=2)
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ ARRAY & SUPPORT
+
+//  Variables in array
+float aRes7 = na, float aRes8 = na, float aRes9 = na, float aRes10 = na, float aRes11 = na, float aRes12 = na
+float aRes1 = na, float aRes2 = na, float aRes3 = na, float aRes4 = na, float aRes5 = na, float aRes6 = na
+
+float aSup1 = na, float aSup2 = na, float aSup3 = na, float aSup4 = na, float aSup5 = na, float aSup6 = na
+float aSup7 = na, float aSup8 = na, float aSup9 = na, float aSup10 = na, float aSup11 = na, float aSup12 = na
+
+length = 12
+
+aRes(i) => i==1?aRes1:i==2?aRes2:i==3?aRes3:i==4?aRes4:i==5?aRes5:i==6?aRes6:i==7?aRes7:i==8?aRes8:i==9?aRes9:i==10?aRes10:i==11?aRes11:i==12?aRes12:na
+
+aSup(i) => i==1?aSup1:i==2?aSup2:i==3?aSup3:i==4?aSup4:i==5?aSup5:i==6?aSup6:i==7?aSup7:i==8?aSup8:i==9?aSup9:i==10?aSup10:i==11?aSup11:i==12?aSup12:na
+
+trim_values(v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12) =>
+    int trim_point = na(v2) or v2 < v1 ? 2 : na(v3) or v3 < v2 ? 3 : na(v4) or v4 < v3 ? 4 : na(v5) or v5 < v4 ? 5 : na(v6) or v6 < v5 ? 6 : na(v7) or v7 < v6 ? 7 :
+       na(v8) or v8 < v7 ? 8 : na(v9) or v9 < v8 ? 9 : na(v10) or v10 < v9 ? 10 : na(v11) or v11 < v10 ? 11 : na(v12) or v12 < v11 ? 12 : 13
+
+    float t1 = trim_point <= 1 ? na : v1
+    float t2 = trim_point <= 2 ? na : v2
+    float t3 = trim_point <= 3 ? na : v3
+    float t4 = trim_point <= 4 ? na : v4
+    float t5 = trim_point <= 5 ? na : v5
+    float t6 = trim_point <= 6 ? na : v6
+    float t7 = trim_point <= 7 ? na : v7
+    float t8 = trim_point <= 8 ? na : v8
+    float t9 = trim_point <= 9 ? na : v9
+    float t10 = trim_point <= 10 ? na : v10
+    float t11 = trim_point <= 11 ? na : v11
+    float t12 = trim_point <= 12 ? na : v12
+
+    [t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, trim_point]
+
+// sorts a list of up to the fixed length
+sort_all(_type) =>
+	float s1=na, float s2=na, float s3=na, float s4=na, float s5=na, float s6=na, float s7=na, float s8=na, float s9=na, float s10=na, float s11=na, float s12=na
+
+    float min=na
+    float last=na
+
+	for i = 1 to length
+		float min_local=na
+        float last_local=na
+
+		for l = 1 to length
+			val = _type == "aRes" ? aRes(l) : aSup(l)
+			if(na(min) or val > min or (val == min and l > last))
+				new_min_local = na(min_local) ? val : min(min_local, na(min) ? val : max(min, val))
+				if(na(min_local) or new_min_local != min_local)
+					last_local := l
+					min_local := new_min_local
+
+		min := min_local
+		last := last_local
+
+		s1 := i == 1 ? min : s1
+		s2 := i == 2 ? min : s2
+		s3 := i == 3 ? min : s3
+		s4 := i == 4 ? min : s4
+        s5 := i == 5 ? min : s5
+		s6 := i == 6 ? min : s6
+		s7 := i == 7 ? min : s7
+		s8 := i == 8 ? min : s8
+		s9 := i == 9 ? min : s9
+        s10 := i == 10 ? min : s10
+		s11 := i == 11 ? min : s11
+		s12 := i == 12 ? min : s12
+
+    //[s1,s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,12]
+	[r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, trim_point] = trim_values(s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12)
+    [s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, trim_point]
+
+color_from_string(_color_text) =>
+    ret_color = _color_text == "Aqua" ? color.aqua : _color_text == "Black" ? color.black : _color_text == "Blue" ? color.blue : _color_text == "Fuchsia" ? color.fuchsia :
+         _color_text == "Gray" ? color.gray : _color_text == "Green" ? color.green : _color_text == "Lime" ? color.lime : _color_text == "Maroon" ? color.maroon :
+         _color_text == "Navy" ? color.navy : _color_text == "Olive" ? color.olive : _color_text == "Orange" ? color.orange : _color_text == "Purple" ? color.purple :
+         _color_text == "Red" ? color.red : _color_text == "Silver" ? color.silver : _color_text == "Teal" ? color.teal : _color_text == "White" ? color.white :
+         _color_text == "Yellow" ? color.yellow : color.white
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ GLOBAL VARIABLES
+
+atr14 = atr(14)
+
+ema20 = ema(close, 20)
+ema50 = ema(close, 50)
+ema200 = ema(close, 200)
+
+label1pos_x = timenow + round(change(time)*5)
+label2pos_x = timenow + round(change(time)*15)
+label3pos_x = timenow + round(change(time)*25)
+
+ATR_COLOR = color_from_string(IN_ATR_LABEL_COLOR)
+
+EMA20_COLOR = color_from_string(IN_EMA20_LINE_COLOR)
+EMA50_COLOR = color_from_string(IN_EMA50_LINE_COLOR)
+EMA200_COLOR = color_from_string(IN_EMA200_LINE_COLOR)
+
+PM_HIGH_COLOR = color_from_string(IN_PM_HIGH_LABEL_COLOR)
+PM_LOW_COLOR = color_from_string(IN_PM_LOW_LABEL_COLOR)
+PREV_CLOSE_COLOR = color_from_string(IN_PREV_CLOSE_LABEL_COLOR)
+
+EMA20_LABEL_COLOR = color_from_string(IN_EMA20_LABEL_COLOR)
+EMA50_LABEL_COLOR = color_from_string(IN_EMA50_LABEL_COLOR)
+EMA200_LABEL_COLOR = color_from_string(IN_EMA200_LABEL_COLOR)
+
+RES_OVER_PCT_COLOR = color_from_string(IN_RES_ABOVE_PCT_LABEL_COLOR)
+RES_UNDER_PCT_COLOR = color_from_string(IN_RES_BELOW_PCT_LABEL_COLOR)
+SUP_COLOR = color_from_string(IN_SUP_LABEL_COLOR)
+
+// After market and Pre market data
+insideRes = "5"
+PMbegHour = 00
+PMbegMinute = 5
+PMendHour = 9
+PMendMinute = 25
+AMbegHour = 16
+AMbegMinute = 00
+AMendHour = 23
+AMendMinute = 55
+
+PMstartMinute = (PMbegHour * 60) + PMbegMinute
+PMfinishMinute = (PMendHour * 60) + PMendMinute
+AMstartMinute = (AMbegHour * 60) + AMbegMinute
+AMfinishMinute = (AMendHour * 60) + AMendMinute
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ USER FUNCTIONS
+
+f_is_fractal_high(_len, _series) =>
+    p = nz(_series[_len])
+    fIsFrHigh = true
+    for c = 0 to _len - 1
+        if (_series[c] > p)
+            fIsFrHigh := false
+    for c = _len + 1 to 2 * _len
+        if (_series[c] > p)
+            fIsFrHigh := false
+    _return = fIsFrHigh
+
+f_is_fractal_low(_len, _series) =>
+    p = nz(_series[_len])
+    fIsFrLow = true
+    for c = 0 to _len - 1
+        if (_series[c] < p)
+            fIsFrLow := false
+    for c = _len + 1 to 2 * _len
+        if (_series[c] < p)
+            fIsFrLow := false
+    _return = fIsFrLow
+
+f_is_fractal(_src, _len, _isHigh) =>
+    p = nz(_src[_len])
+    isFractal = true
+    for i = 0 to _len - 1
+        if (_isHigh and _src[i] > p)
+            isFractal := false
+        if (not _isHigh and _src[i] < p)
+            isFractal := false
+    for i = _len + 1 to 2 * _len
+        if (_isHigh and _src[i] > p)
+            isFractal := false
+        if (not _isHigh and _src[i] < p)
+            isFractal := false
+    _return = isFractal
+
+f_time_to_repaint(_last_repaint_time) =>
+    _return = timenow - _last_repaint_time > SECONDS_BETWEEN_CALCULATIONS
+
+f_draw_infopanel(_x, _y, _line, _color, _text) =>
+    _rep_text = ""
+    if barstate.islast
+        for _l = 0 to _line
+            _rep_text := _rep_text + "\n"
+        _rep_text := _rep_text + _text
+        var label _la = na
+        label.delete(_la)
+        _la := label.new(
+             x=_x, y=_y,
+             text=_rep_text, xloc=xloc.bar_time, yloc=yloc.price, textalign=text.align_left,
+             color=color.black, style=label.style_labelup, textcolor=_color, size=size.normal)
+        label.set_textalign(_la, text.align_left)
+    _return = _line - 2
+
+f_next_pnl_num(_restart) =>
+    var int curNum = 0
+    curNum := _restart == true ? 0 : curNum + 2
+
+f_draw_line_label(_x, _y, _text) =>
+    if barstate.islast
+        var label _lab = na
+        label.delete(_lab)
+        _lab := label.new(
+             x=_x, y=_y,
+             text=_text, xloc=xloc.bar_time, yloc=yloc.price, textalign=text.align_left,
+             style=label.style_none, size=size.normal, textcolor=color.white)
+
+f_PMhighBetweenTime(_start, _finish) =>
+    // Returns low between specific times.
+    var float _return = 0.
+    var _reset = true
+    _minuteNow = (hour * 60) + minute
+    if _minuteNow >= _start and _minuteNow <= _finish
+        // We are inside period.
+        if _reset
+            // We are at first bar inside period.
+            _return := high
+            _reset := false
+        else
+            _return := max(_return, high)
+    else
+        // We are past period; enable reset for when we next enter period.
+        _reset := true
+    _return
+
+f_PMlowBetweenTime(_start, _finish) =>
+    // Returns low between specific times.
+    var float _return = 10e10
+    var _reset = true
+    _minuteNow = (hour * 60) + minute
+    if _minuteNow >= _start and _minuteNow <= _finish
+        // We are inside period.
+        if _reset
+            // We are at first bar inside period.
+            _return := low
+            _reset := false
+        else
+            _return := min(_return, low)
+    else
+        // We are past period; enable reset for when we next enter period.
+        _reset := true
+    _return
+
+f_AMhighBetweenTime(_start, _finish) =>
+    // Returns low between specific times.
+    var float _return = 0.
+    var _reset = true
+    _minuteNow = (hour * 60) + minute
+    if _minuteNow >= _start and _minuteNow <= _finish
+        // We are inside period.
+        if _reset
+            // We are at first bar inside period.
+            _return := high
+            _reset := false
+        else
+            _return := max(_return, high)
+    else
+        // We are past period; enable reset for when we next enter period.
+        _reset := true
+    _return
+
+f_AMlowBetweenTime(_start, _finish) =>
+    // Returns low between specific times.
+    var float _return = 10e10
+    var _reset = true
+    _minuteNow = (hour * 60) + minute
+    if _minuteNow >= _start and _minuteNow <= _finish
+        // We are inside period.
+        if _reset
+            // We are at first bar inside period.
+            _return := low
+            _reset := false
+        else
+            _return := min(_return, low)
+    else
+        // We are past period; enable reset for when we next enter period.
+        _reset := true
+    _return
+
+num_na_values_sup() =>
+    int _sup_na_tally = 0
+    for s = 1 to length
+        valS = aSup(s)
+        _sup_na_tally := na(valS) ? _sup_na_tally + 1 : _sup_na_tally
+
+    _sup_na_tally
+
+num_na_values() =>
+    int _na_tally = 0
+    for r = 1 to length
+        valR = aRes(r)
+        _na_tally := na(valR) ? _na_tally + 1 : _na_tally
+
+    for s = 1 to length
+        valS = aSup(s)
+        _na_tally := na(valS) ? _na_tally + 1 : _na_tally
+
+    _na_tally
+
+build_level_string(_val, _label, _atr14, _ema20, _ema50, _ema200, _pm_high, _pm_low, _res_color) =>
+    _done = false
+    _text = "NA"
+    _color = color.white
+    _is_resistance = _label == "R1" or _label == "R2" or _label == "R3" or _label == "R4" or _label == "R5" or _label == "R6" or _label == "R7" or _label == "R8" or
+                     _label == "R9" or _label == "R10" or _label == "R11" or _label == "R12" ? true : false
+
+    pct_delta_to_price = na(_val) ? na : abs(close - _val) / close
+    pct_delta_string = tostring((pct_delta_to_price * 100), "#.00") + "% "
+
+    val_string = na(_val) ? "NA" : tostring(_val, "#.00")
+
+    if na(_val)
+        _done := true
+    if _val == close + _atr14 and _done != true
+        _text := "ATR " + val_string + " " + pct_delta_string
+        _color := ATR_COLOR
+        _done := true
+    if _val == _pm_high and _done != true
+        _text := "PM HIGH " + val_string + " " + pct_delta_string
+        _color := PM_HIGH_COLOR
+        _done := true
+    if _val == _pm_low and _done != true
+        _text := "PM LOW " + val_string + " " + pct_delta_string
+        _color := PM_LOW_COLOR
+        _done := true
+    if _val == close[1] and _done != true
+        _text := "PREV CLOSE " + val_string + " " + pct_delta_string
+        _color := PREV_CLOSE_COLOR
+        _done := true
+    if _val == _ema20 and _done != true
+        _text := pct_delta_string + _label + "  " + val_string + " EMA 20"
+        _color := EMA20_LABEL_COLOR
+        _done := true
+    if _val == _ema50 and _done != true
+        _text := pct_delta_string + _label + "  " + val_string + " EMA 50"
+        _color := EMA50_LABEL_COLOR
+        _done := true
+    if _val == _ema200 and _done != true
+        _text := pct_delta_string + _label + "  " + val_string + " EMA 200"
+        _color := EMA200_LABEL_COLOR
+        _done := true
+    if _done != true
+        _text := pct_delta_string + " " + _label + "  " + val_string
+        _color := _res_color
+        _done := true
+
+    [_text, _color]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ RUN SCRIPT EVERY X MS
+
+//int scriptLastRun = 0
+// var int iter = 0
+// var int scriptLastRun = 0
+// bool timeToRunScript = (timenow - scriptLastRun) > MS_BETWEEN_CALCULATIONS
+
+// if (timeToRunScript)
+//     if bar_index <= 1
+//         scriptLastRun := 0
+//     else
+//         scriptLastRun := int(timenow)
+//         iter := iter + 1
+
+int secondsTime = int(timenow*.001)
+bool paintLabels = secondsTime % SECONDS_BETWEEN_CALCULATIONS == 0
+
+//paintLabels = barstate.isrealtime
+//lastPainting = valuewhen(true, paintLabels, 0)
+
+//scriptLastRun := bar_index <= 1 ? 0 : timeToRunScript ? timenow : scriptLastRun
+//paintLabels = f_time_to_repaint(lastPainting)
+
+//runScript = (timenow - timePrevStart) > MS_BETWEEN_CALCULATIONS
+//timePrevStart := runScript ? timenow : timePrevStart
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ SCRIPT STOPWATCH
+
+// —————————— ▼▼▼▼▼ Calculate run time of the script (insert this snippet after your "input()" calls).
+// Produces 3 values:
+//      _totalTime      = total elapsed time (ms)
+//      _msPerBar       = avg time per bar (ms)
+//      _barsTimed      = bars timed.
+// Get time at first bar.
+// var _timeBegin = timenow
+// // Get ms elapsed since first bar.
+// var _timeElapsed = 0.
+// if not barstate.islast
+//     _timeElapsed := timenow - _timeBegin
+// // Calculate avg/bar only when time changes.
+// var _msPerBar = 0.
+// // Total bars timed before last change in "timenow".
+// var _barsTimed = 0
+// // ————— Bars elapsed since last change in "timenow".
+// var _barsNotTimed = 0
+// if change(_timeElapsed)
+//     _barsTimed := bar_index + 1
+//     _msPerBar  := _timeElapsed / _barsTimed
+// // ————— In between time changes, which only occur every second, estimate elapsed time using avg time per bar.
+// if not barstate.islast
+//     // Bars elapsed since last change of time.
+//     _barsNotTimed := bar_index  + 1 - _barsTimed
+// // ————— Add (bars since "timenow" change * avg bar time) to time elapsed since last "timenow" change to get better estimate of total time elapsed.
+// _totalTime = _timeElapsed + (_barsNotTimed * _msPerBar)
+// // —————————— Display results in one of 3 modes (comment out those you don't need).
+// _msPerBarColor = _msPerBar > 50 ? color.red : _msPerBar > 5 ? color.maroon : _msPerBar == 0 ? color.lime : color.green
+// // ————— Mode 1: Print label at the end of chart.
+// if barstate.islast
+//     var _label_text = tostring(_msPerBar, "Avg time per bar\n#.#### ms\n\n") + tostring(_totalTime / 1000, "Time elapsed\n#.#### seconds\n\n") + tostring(_barsTimed + _barsNotTimed, "Bars analyzed\n#")
+//     var label _timeLabel = label.new(bar_index, na, _label_text, xloc.bar_index, yloc.belowbar, style = label.style_none, textcolor = _msPerBarColor)
+//     label.set_xy(_timeLabel, bar_index, na)
+// // ————— Mode 2: Plot elapsed time.
+// plot(_totalTime,        "Execution time (ms)", color.gray)
+// // ————— Mode 3: Print Data Window values.
+// plotchar(_msPerBar,     "Avg time / bar (ms)",  "", location.top, _msPerBarColor)
+// plotchar(_totalTime,    "Execution time (ms)",  "", location.top)
+// plotchar(_barsTimed,    "Bars timed",           "", location.top)
+// —————————— ▲▲▲▲▲
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ AFTER & PRE MARKET HIGH & LOW
+
+t = tickerid(syminfo.prefix, syminfo.ticker, session.extended)
+
+PMhighAtTime = security(t, insideRes, f_PMhighBetweenTime(PMstartMinute, PMfinishMinute), barmerge.gaps_on, barmerge.lookahead_on)
+PMlowAtTime = security(t, insideRes, f_PMlowBetweenTime(PMstartMinute, PMfinishMinute), barmerge.gaps_on, barmerge.lookahead_on)
+
+AMhighAtTime = security(t, insideRes, f_AMhighBetweenTime(AMstartMinute, AMfinishMinute), barmerge.gaps_on, barmerge.lookahead_on)
+AMlowAtTime = security(t, insideRes, f_AMlowBetweenTime(AMstartMinute, AMfinishMinute), barmerge.gaps_on, barmerge.lookahead_on)
+
+extended_high = AMhighAtTime > PMhighAtTime ? AMhighAtTime : PMhighAtTime
+extended_low = AMlowAtTime < PMlowAtTime ? AMlowAtTime : PMlowAtTime
+
+fixnan(extended_high)
+fixnan(extended_low)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ FIRST FRACTAL VARIANT RULE
+
+bool fractalUps = f_is_fractal(high, 3, true)
+bool fractalDowns = f_is_fractal(low, 3, false)
+
+// This rule allows the first fractal high or low (not both) to be within 1-3 candles of the current candle as long as the three
+// highs or lows respectively are lower/higher on the other side of the potential variant fractal.
+// To find this we will start at the prev candle and check the following (for a fractal high)
+//     - Is the high higher than the the previous three candle highs and all candle high after?
+//         - NO: Check the same candle for a variant fractal low.
+//         - YES: This is a Variant First Fractal High, proceed to the next step.
+//     - We then repeat the same steps to find a variant fractal low.
+
+left_highs_lower = high > high[1] and high > high[2] and high > high[3]
+left_lows_higher = low < low[1] and low < low[2] and low < low[3]
+
+//  Search for a variant fractal high
+int var_fractal_high = 0
+for vh = 1 to 2
+    if (high <= high[vh] and high[vh] >= highest(high, vh) and left_highs_lower[vh] == true)
+        var_fractal_high := bar_index[vh]
+        break
+
+//  Search for a variant fractal high
+int var_fractal_low = 0
+for vl = 1 to 2
+    if (low >= low[vl] and low[vl] <= lowest(low, vl) and left_lows_higher[vl] == true)
+        var_fractal_low := bar_index[vl]
+        break
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ FIND QUALIFIED FRACTALS
+
+// Find previous six qualified HIGH Fractals
+
+frH1Bar = var_fractal_high > 0 ? var_fractal_high : 0
+frH2Bar = 0
+frH3Bar = 0
+frH4Bar = 0
+frH5Bar = 0
+//frH6Bar = 0
+last_H_fr = 0.0
+
+for i = 1 to 1000
+    if (barstate.islast != true) // or loopDone != 0 or bar_index < 1004)
+        break
+    // If we found a fractal up and it's price is higher than the current price and it's high is higher than the last fractal up.
+    if (fractalUps[i] == true and high[i+3] > close and high[i+3] > last_H_fr) // and high[h_fr] > last_fr)
+        last_H_fr := high[i+3]
+        if (frH1Bar == 0)
+            frH1Bar := bar_index[i+3]
+            continue
+        if (frH2Bar == 0)
+            frH2Bar := bar_index[i+3]
+            continue
+        if (frH3Bar == 0)
+            frH3Bar := bar_index[i+3]
+            continue
+        if (frH4Bar == 0)
+            frH4Bar := bar_index[i+3]
+            continue
+        if (frH5Bar == 0)
+            frH5Bar := bar_index[i+3]
+            continue
+        // if (frH6Bar == 0)
+        //     frH6Bar := bar_index[i+3]
+        //     break
+
+// Find previous six qualified LOW Fractals
+
+frL1Bar = var_fractal_low > 0 ? var_fractal_low : 0
+frL2Bar = 0
+frL3Bar = 0
+frL4Bar = 0
+frL5Bar = 0
+frL6Bar = 0
+last_L_fr = 99999.0
+
+for i = 1 to 1000
+    if (barstate.islast != true)
+        break
+    // If we found a fractal down and it's price is lower than the current price and it's low is lower than the last fractal down.
+    if (fractalDowns[i] == true and low[i+3] < close and low[i+3] < last_L_fr) // and high[h_fr] > last_fr)
+        last_L_fr := low[i+3]
+        if (frL1Bar == 0)
+            frL1Bar := bar_index[i+3]
+            continue
+        if (frL2Bar == 0)
+            frL2Bar := bar_index[i+3]
+            continue
+        if (frL3Bar == 0)
+            frL3Bar := bar_index[i+3]
+            continue
+        if (frL4Bar == 0)
+            frL4Bar := bar_index[i+3]
+            continue
+        if (frL5Bar == 0)
+            frL5Bar := bar_index[i+3]
+            continue
+        if (frL6Bar == 0)
+            frL6Bar := bar_index[i+3]
+            break
+
+aRes1 := frH1Bar != 0 ? high[bar_index-frH1Bar] : na
+aRes2 := frH2Bar != 0 ? high[bar_index-frH2Bar] : na
+aRes3 := frH3Bar != 0 ? high[bar_index-frH3Bar] : na
+aRes4 := frH4Bar != 0 ? high[bar_index-frH4Bar] : na
+aRes5 := frH5Bar != 0 ? high[bar_index-frH5Bar] : na
+//aRes6 := frH6Bar != 0 ? high[bar_index-frH6Bar] : na
+
+aSup1 := frL1Bar != 0 ? low[bar_index-frL1Bar] : na
+aSup2 := frL2Bar != 0 ? low[bar_index-frL2Bar] : na
+aSup3 := frL3Bar != 0 ? low[bar_index-frL3Bar] : na
+aSup4 := frL4Bar != 0 ? low[bar_index-frL4Bar] : na
+aSup5 := frL5Bar != 0 ? low[bar_index-frL5Bar] : na
+aSup6 := frL6Bar != 0 ? low[bar_index-frL6Bar] : na
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ ADD EMA, PM, & PREV CLOSE LEVELS
+
+aRes6 := close + atr14
+
+if (ema20 >= close)
+    aRes7 := ema20
+else
+    aSup7 := ema20
+
+if (ema50 >= close)
+    aRes8 := ema50
+else
+    aSup8 := ema50
+
+if (ema200 >= close)
+    aRes9 := ema200
+else
+    aSup9 := ema200
+
+if (extended_high >= close)
+    aRes10 := extended_high
+else
+    aSup10 := extended_high
+
+if (extended_low >= close)
+    aRes11 := extended_low
+else
+    aSup11 := extended_low
+
+if (close[1] >= close)
+    aRes12 := close[1]
+else
+    aSup12 := close[1]
+
+
+[pres1,pres2,pres3,pres4,pres5,pres6,pres7,pres8,pres9,pres10,pres11,pres12,res1,res2,res3,res4,res5,res6,res7,res8,res9,res10,res11,res12,rl_trim_point] = sort_all("aRes")
+[psup1,psup2,psup3,psup4,psup5,psup6,psup7,psup8,psup9,psup10,psup11,psup12,sup1,sup2,sup3,sup4,sup5,sup6,sup7,sup8,sup9,sup10,sup11,sup12,sl_trim_point] = sort_all("aSup")
+
+pct_delta_to_res1 = not na(res1) ? (res1 - close) / close : 0
+res_color = pct_delta_to_res1 < (IN_PCT_DELTA_TO_RES1 * .01) ? RES_UNDER_PCT_COLOR : RES_OVER_PCT_COLOR
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ BUILD LEVEL TEXT STRINGS
+
+[r1_text,r1_color] = build_level_string(res1, "R1", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r2_text,r2_color] = build_level_string(res2, "R2", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r3_text,r3_color] = build_level_string(res3, "R3", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r4_text,r4_color] = build_level_string(res4, "R4", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r5_text,r5_color] = build_level_string(res5, "R5", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r6_text,r6_color] = build_level_string(res6, "R6", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r7_text,r7_color] = build_level_string(res7, "R7", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r8_text,r8_color] = build_level_string(res8, "R8", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r9_text,r9_color] = build_level_string(res9, "R9", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r10_text,r10_color] = build_level_string(res10, "R10", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r11_text,r11_color] = build_level_string(res11, "R11", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+[r12_text,r12_color] = build_level_string(res12, "R12", atr14, ema20, ema50, ema200, extended_high, extended_low, res_color)
+
+int sup_na_count = num_na_values_sup()
+
+[s1_text,s1_color] = build_level_string(sup1, "S" + tostring(12 - 0 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s2_text,s2_color] = build_level_string(sup2, "S" + tostring(12 - 1 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s3_text,s3_color] = build_level_string(sup3, "S" + tostring(12 - 2 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s4_text,s4_color] = build_level_string(sup4, "S" + tostring(12 - 3 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s5_text,s5_color] = build_level_string(sup5, "S" + tostring(12 - 4 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s6_text,s6_color] = build_level_string(sup6, "S" + tostring(12 - 5 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s7_text,s7_color] = build_level_string(sup7, "S" + tostring(12 - 6 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s8_text,s8_color] = build_level_string(sup8, "S" + tostring(12 - 7 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s9_text,s9_color] = build_level_string(sup9, "S" + tostring(12 - 8 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s10_text,s10_color] = build_level_string(sup10, "S" + tostring(12 - 9 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s11_text,s11_color] = build_level_string(sup11, "S" + tostring(12 - 10 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+[s12_text,s12_color] = build_level_string(sup12, "S" + tostring(12 - 11 - sup_na_count), atr14, ema20, ema50, ema200, extended_high, extended_low, SUP_COLOR)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ INFORMATION PANEL
+
+lapos_x = timenow + round(change(time)*BOX_DISTANCE)
+lapos_y = highest(20)
+
+int na_count = num_na_values()
+int line_count = (length * 2 * 2 + 4) - (na_count * 2)
+int max_lines = line_count
+
+// TITLE STRING: BYND 8:06 AM 202.31 5.2%  (explanation: Symbol, CST, current price, % to next R)
+res1_pct = na(res1) ? na : (res1 - close) / close
+res1_pct_string = tostring((res1_pct * 100), "#.00") + "% "
+title_string = syminfo.tickerid + " " + tostring(hour(timenow)) + ":" + tostring(minute(timenow), "00") + " " + tostring(close, "#.00") + " " + res1_pct_string
+// title_string = syminfo.tickerid + " - " + tostring(year(timenow)) + "/" + tostring(month(timenow)) + "/" + tostring(dayofmonth(timenow)) + " " + tostring(hour(timenow)) + ":" + tostring(minute(timenow))
+
+section_break_string = "    "
+
+var line_count_saved = 0
+var title_string_saved = ""
+var s1_text_saved = ""
+var s2_text_saved = ""
+var s3_text_saved = ""
+var s4_text_saved = ""
+var s5_text_saved = ""
+var s6_text_saved = ""
+var s7_text_saved = ""
+var s8_text_saved = ""
+var s9_text_saved = ""
+var s10_text_saved = ""
+var s11_text_saved = ""
+var s12_text_saved = ""
+var r1_text_saved = ""
+var r2_text_saved = ""
+var r3_text_saved = ""
+var r4_text_saved = ""
+var r5_text_saved = ""
+var r6_text_saved = ""
+var r7_text_saved = ""
+var r8_text_saved = ""
+var r9_text_saved = ""
+var r10_text_saved = ""
+var r11_text_saved = ""
+var r12_text_saved = ""
+
+if (paintLabels == true)
+    title_string_saved = title_string
+    s1_text_saved = s1_text
+    s2_text_saved = s2_text
+    s3_text_saved = s3_text
+    s4_text_saved = s4_text
+    s5_text_saved = s5_text
+    s6_text_saved = s6_text
+    s7_text_saved = s7_text
+    s8_text_saved = s8_text
+    s9_text_saved = s9_text
+    s10_text_saved = s10_text
+    s11_text_saved = s11_text
+    s12_text_saved = s12_text
+    r1_text_saved = r1_text
+    r2_text_saved = r2_text
+    r3_text_saved = r3_text
+    r4_text_saved = r4_text
+    r5_text_saved = r5_text
+    r6_text_saved = r6_text
+    r7_text_saved = r7_text
+    r8_text_saved = r8_text
+    r9_text_saved = r9_text
+    r10_text_saved = r10_text
+    r11_text_saved = r11_text
+    r12_text_saved = r12_text
+else
+    title_string = title_string_saved
+    s1_text = s1_text_saved
+    s2_text = s2_text_saved
+    s3_text = s3_text_saved
+    s4_text = s4_text_saved
+    s5_text = s5_text_saved
+    s6_text = s6_text_saved
+    s7_text = s7_text_saved
+    s8_text = s8_text_saved
+    s9_text = s9_text_saved
+    s10_text = s10_text_saved
+    s11_text = s11_text_saved
+    s12_text = s12_text_saved
+    r1_text = r1_text_saved
+    r2_text = r2_text_saved
+    r3_text = r3_text_saved
+    r4_text = r4_text_saved
+    r5_text = r5_text_saved
+    r6_text = r6_text_saved
+    r7_text = r7_text_saved
+    r8_text = r8_text_saved
+    r9_text = r9_text_saved
+    r10_text = r10_text_saved
+    r11_text = r11_text_saved
+    r12_text = r12_text_saved
+
+line_count := f_draw_infopanel(lapos_x, lapos_y, line_count, color.white, "╚════════════════════════════╝")
+line_count := na(sup1) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s1_color, s1_text)
+line_count := na(sup2) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s2_color, s2_text)
+line_count := na(sup3) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s3_color, s3_text)
+line_count := na(sup4) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s4_color, s4_text)
+line_count := na(sup5) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s5_color, s5_text)
+line_count := na(sup6) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s6_color, s6_text)
+line_count := na(sup7) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s7_color, s7_text)
+line_count := na(sup8) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s8_color, s8_text)
+line_count := na(sup9) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s9_color, s9_text)
+line_count := na(sup10) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s10_color, s10_text)
+line_count := na(sup11) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s11_color, s11_text)
+line_count := na(sup12) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, s12_color, s12_text)
+line_count := f_draw_infopanel(lapos_x, lapos_y, line_count, color.white,  section_break_string)
+line_count := na(res1) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r1_color, r1_text)
+line_count := na(res2) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r2_color, r2_text)
+line_count := na(res3) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r3_color, r3_text)
+line_count := na(res4) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r4_color, r4_text)
+line_count := na(res5) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r5_color, r5_text)
+line_count := na(res6) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r6_color, r6_text)
+line_count := na(res7) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r7_color, r7_text)
+line_count := na(res8) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r8_color, r8_text)
+line_count := na(res9) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r9_color, r9_text)
+line_count := na(res10) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r10_color, r10_text)
+line_count := na(res11) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r11_color, r11_text)
+line_count := na(res12) ? line_count : f_draw_infopanel(lapos_x, lapos_y, line_count, r12_color, r12_text)
+line_count := f_draw_infopanel(lapos_x, lapos_y, line_count, color.white,  "╔══ " + title_string + " ══╗")
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ PLOTS
+
+plotchar(atr14, "ATR 14", "", location = location.top, color = ATR_COLOR)
+plot(ema20, "EMA 20", color = EMA20_COLOR)
+plot(ema50, "EMA 50", color = EMA50_COLOR)
+plot(ema200, "EMA 200", color = EMA200_COLOR)
+
+//  COLOR: blue, aqua, teal, navy, purple || fuchsia, maroon, orange, red, yellow || green, lime, olive || black, gray, silver, white
+plotchar(bar_index, "BAR INDEX", "", location = location.top, color = color.white)
+
+// plotchar(paintLabels, "paintLabels", "", location = location.top, color = color.orange)
+
+// plotchar(1, "   ~~~~~~~~ PRE-SORTED ARRAYS ~~~~~~~~", location = location.top, color = color.black)
+// plotchar(aRes1, "aRes1", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes2, "aRes2", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes3, "aRes3", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes4, "aRes4", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes5, "aRes5", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes6, "aRes6", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes7, "aRes7", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes8, "aRes8", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes9, "aRes9", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes10, "aRes10", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes11, "aRes11", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aRes12, "aRes12", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(aSup1, "aSup1", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup2, "aSup2", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup3, "aSup3", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup4, "aSup4", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup5, "aSup5", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup6, "aSup6", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup7, "aSup7", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup8, "aSup8", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup9, "aSup9", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup10, "aSup10", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup11, "aSup11", "", location = location.top, color = SUP_COLOR)
+// plotchar(aSup12, "aSup12", "", location = location.top, color = SUP_COLOR)
+
+// plotchar(1, "   ~~~~~~~~ PRE-TRIMMED ARRAYS ~~~~~~~~", location = location.top, color = color.black)
+// plotchar(pres1, "RES1", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres2, "RES2", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres3, "RES3", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres4, "RES4", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres5, "RES5", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres6, "RES6", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres7, "RES7", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres8, "RES8", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres9, "RES9", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres10, "RES10", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres11, "RES11", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(pres12, "RES12", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(sl_trim_point, "S-trimPoint", "", location = location.top, color = color.orange)
+// plotchar(psup1, "SUP1", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup2, "SUP2", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup3, "SUP3", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup4, "SUP4", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup5, "SUP5", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup6, "SUP6", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup7, "SUP7", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup8, "SUP8", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup9, "SUP9", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup10, "SUP10", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup11, "SUP11", "", location = location.top, color = SUP_COLOR)
+// plotchar(psup12, "SUP12", "", location = location.top, color = SUP_COLOR)
+
+// plotchar(1, "   ~~~~~~~ SORTED & TRIMMED ARRAYS ~~~~~~~", location = location.top, color = color.black)
+// plotchar(rl_trim_point, "R-trimPoint", "", location = location.top, color = color.orange)
+// plotchar(res1, "RES1", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res2, "RES2", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res3, "RES3", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res4, "RES4", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res5, "RES5", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res6, "RES6", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res7, "RES7", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res8, "RES8", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res9, "RES9", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res10, "RES10", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res11, "RES11", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(res12, "RES12", "", location = location.top, color = RES_OVER_PCT_COLOR)
+// plotchar(sl_trim_point, "S-trimPoint", "", location = location.top, color = color.orange)
+// plotchar(sup1, "SUP1", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup2, "SUP2", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup3, "SUP3", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup4, "SUP4", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup5, "SUP5", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup6, "SUP6", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup7, "SUP7", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup8, "SUP8", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup9, "SUP9", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup10, "SUP10", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup11, "SUP11", "", location = location.top, color = SUP_COLOR)
+// plotchar(sup12, "SUP12", "", location = location.top, color = SUP_COLOR)
+
+plotchar(close, "   ~~~~~~~~ FRACTALS ~~~~~~~~", location = location.top, color = color.black)
+plotchar(var_fractal_high, "Variant frH1-Bar", "", location = location.top, color = color.orange)
+plotchar(frH1Bar, "frH1-Bar", "", location = location.top, color = RES_OVER_PCT_COLOR)
+plotchar(frH2Bar, "frH2-Bar", "", location = location.top, color = RES_OVER_PCT_COLOR)
+plotchar(frH3Bar, "frH3-Bar", "", location = location.top, color = RES_OVER_PCT_COLOR)
+plotchar(frH4Bar, "frH4-Bar", "", location = location.top, color = RES_OVER_PCT_COLOR)
+plotchar(frH5Bar, "frH5-Bar", "", location = location.top, color = RES_OVER_PCT_COLOR)
+plotchar(var_fractal_low, "Variant frL1-Bar", "", location = location.top, color = color.orange)
+plotchar(frL1Bar, "frL1-Bar", "", location = location.top, color = SUP_COLOR)
+plotchar(frL2Bar, "frL2-Bar", "", location = location.top, color = SUP_COLOR)
+plotchar(frL3Bar, "frL3-Bar", "", location = location.top, color = SUP_COLOR)
+plotchar(frL4Bar, "frL4-Bar", "", location = location.top, color = SUP_COLOR)
+plotchar(frL5Bar, "frL5-Bar", "", location = location.top, color = SUP_COLOR)
+plotchar(frL6Bar, "frL6-Bar", "", location = location.top, color = SUP_COLOR)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ S&R LINES ON CHART
+
+// linePMHigh = line.new(bar_index, extended_high, bar_index[1], extended_high, xloc=xloc.bar_index, color=PM_COLOR, style=line.style_dashed, width=1, extend=extend.left)
+// labelPMHigh = f_draw_line_label(label1pos_x, extended_high + (extended_high * .004), "PM_HIGH")
+// if (na(extended_high))
+//     line.delete(linePMHigh)
+//     label.delete(labelPMHigh)
+// line.delete(linePMHigh[1])
+
+// linePMLow = line.new(bar_index, extended_low, bar_index[1], extended_low, xloc=xloc.bar_index, color=PM_COLOR, style=line.style_dashed, width=1, extend=extend.left)
+// labelPMLow = f_draw_line_label(label2pos_x, extended_low + (extended_low * .004), "PM_LOW")
+// if (na(extended_low))
+//     line.delete(linePMLow)
+//     label.delete(labelPMLow)
+// line.delete(linePMLow[1])
+
+// linePrevClose = line.new(bar_index, close[1], bar_index[1], close[1], xloc=xloc.bar_index, color=PM_COLOR, style=line.style_dashed, width=1, extend=extend.left)
+// labelPrevClose = f_draw_line_label(label3pos_x, close[1] + (close[1] * .004), "PREV_CLOSE")
+// if (na(close[1]))
+//     line.delete(linePrevClose)
+//     label.delete(labelPrevClose)
+// line.delete(linePrevClose[1])
+
+// //  1st Resistance
+
+// lineR1 = line.new(bar_index, res1, bar_index[1], res1, xloc=xloc.bar_index, color=res_color, style=line.style_solid, width=1, extend=extend.left)
+// labelR1 = f_draw_line_label(label1pos_x, res1 + (res1 * .004), "RES_1")
+// if (res1 >= 99999)
+//     line.delete(lineR1)
+//     label.delete(labelR1)
+// line.delete(lineR1[1])
+
+// //  Remaining S&R lines to draw
+
+// lineR2 = line.new(bar_index, res2, bar_index[1], res2, xloc=xloc.bar_index, color=res_color, style=line.style_solid, width=1, extend=extend.left)
+// labelR2 = f_draw_line_label(label2pos_x, res2 + (res2 * .004), "RES_2")
+// if (res2 >= 99999)
+//     line.delete(lineR2)
+//     label.delete(labelR2)
+// line.delete(lineR2[1])
+
+// lineR3 = line.new(bar_index, res3, bar_index[1], res3, xloc=xloc.bar_index, color=res_color, style=line.style_solid, width=1, extend=extend.left)
+// labelR3 = f_draw_line_label(label3pos_x, res3 + (res3 * .004), "RES_3")
+// if (res3 >= 99999)
+//     line.delete(lineR3)
+//     label.delete(labelR3)
+// line.delete(lineR3[1])
+
+// lineS1 = line.new(bar_index, sup1, bar_index[1], sup1, xloc=xloc.bar_index, color=SUP_COLOR, style=line.style_solid, width=1, extend=extend.left)
+// labelS1 = f_draw_line_label(label1pos_x, sup1 + (sup1 * .004), "SUP_1")
+// if (sup1 == 0)
+//     line.delete(lineS1)
+//     label.delete(labelS1)
+// line.delete(lineS1[1])
+
+// lineS2 = line.new(bar_index, sup2, bar_index[1], sup2, xloc=xloc.bar_index, color=SUP_COLOR, style=line.style_solid, width=1, extend=extend.left)
+// labelS2 = f_draw_line_label(label2pos_x, sup2 + (sup2 * .004), "SUP_2")
+// if (sup2 == 0)
+//     line.delete(lineS2)
+//     label.delete(labelS2)
+// line.delete(lineS2[1])
+
+// lineS3 = line.new(bar_index, sup3, bar_index[1], sup3, xloc=xloc.bar_index, color=SUP_COLOR, style=line.style_solid, width=1, extend=extend.left)
+// labelS3 = f_draw_line_label(label3pos_x, sup3 + (sup3 * .004), "SUP_3")
+// if (sup3 == 0)
+//     line.delete(lineS3)
+//     label.delete(labelS3)
+// line.delete(lineS3[1])

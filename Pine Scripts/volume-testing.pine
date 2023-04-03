@@ -1,0 +1,133 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © drmrboyc
+
+//@version=4
+study(
+     title = "Volume Testing",
+     shorttitle = "Vol",
+     overlay = false
+     )
+     
+plot(close)
+
+MAX_VOL_PCT = input(5000, "MAX Volume % Increase")
+MIN_VOL_PCT = input(400, "MIN Volume % Increase")
+
+MIN_CANDLE_PCT_ATR = input(80, "MIN Candle Size % of ATR")
+MAX_CANDLE_PCT_ATR = input(400, "MAX Candle Size % of ATR")
+
+PCT_GAIN_TO_EXIT_HALF = input(20, "Percent Gain to Exit Half (0 to Not Use)")
+PCT_GAIN_TO_TRAIL_STOP = input(10, "Percent Gain to Activate Trail Stop")
+
+showMA=input(false, title="Show high alert level?")
+showbb = input(title="Show BB?", defval = false)
+showhighlowwarnings = input(title="Show high/low warnings (H/L)?", defval=true)
+plotthem = input(title="Plot strategy shapes?", defval = false)
+showreversals = input(title="Show reversal warnings?", defval=true)
+showrsibreakouts = input(title="Show rsi breakouts?", defval=true)
+showoscilator = input(title="show oscilator", defval=true)
+colorcandles = input(title="Color candles?", defval=true)
+percentagevolume = input(title="Show volume as % of previous volume? (% as units)", defval=false)
+uselog = input(title="Instead show log of volume (Units e.g. log(BTC))", defval=false)
+usepercentMA = input(title="Instead show volume as % of moving average (% as units)", defval=false)
+
+significantvolume = input(title="Paint significant volume differently?",  defval = false)
+graycandles = input(title="Use gray for low volume candles?",  defval = true)// volumeok graycandles
+modifiedobv = input(title="Use wick rejection for obv momentum calculation?", defval = true)
+otherunits = input(title="Multiply by hlc3 of price? (e.g. vol of DCRBTC will be in BTC, not DCR)", defval = true)
+multiply = input(title="Multiply by another symbol named below?", defval = false)
+exp1 = input(title="(e.g. If you're looking at ALTUSD, ALTBTC can be multiplied by BTCUSD) ignore->", defval = false)
+reversalsand = input(title="Reversals for peak volume OR oscilator swing (alternative AND)", defval=true)
+
+lengthMA=input(20, title="ema length (for H/L, BB)")
+rsilength = input(title="rsi length", defval = 14)
+emalength = input(title="response speed ema length", defval = 2)
+accumsmooth = input(title="Accum smooth", defval = 3)
+accumlength = input(title="Accum length", defval = 10)
+highstdevs = input(title="High warning std dev multiplier?", defval = 4)
+rsidevs = input(title="rsi breakout std dev multiplier?", defval = 2)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ GLOBAL VARIABLES
+
+myvolume2 = otherunits? nz(volume) * hlc3 : nz(volume)
+myvolume = myvolume2
+
+//calculate fractions of volume for each direction
+//basically body counts twice in body direction, wicks count once in both directions, total fraction = fractionup+fractiondown = 1, i.e. total volume is volume up + volume down
+topwick = iff(open<close, high - close, high - open)
+bottomwick = iff(open<close, open-low, close-low)
+body = iff(open<close, close-open, open-close)
+
+fractionup = iff( open<close, (topwick + bottomwick + 2*body)/(2*topwick + 2*bottomwick + 2*body), (topwick + bottomwick)/(2*topwick + 2*bottomwick + 2*body) )
+fractiondown = iff( open<close, (topwick + bottomwick)/(2*topwick + 2*bottomwick + 2*body), (topwick + bottomwick + 2*body)/(2*topwick + 2*bottomwick + 2*body) )
+
+volumeup =  nz(myvolume) * fractionup
+volumedown = nz(myvolume) * fractiondown
+
+pvolumeup = nz(myvolume)/fixnan(myvolume[1])*100 * fractionup
+pvolumedown = nz(myvolume)/fixnan(myvolume[1])*100  * fractiondown
+
+//makes sure log is above 0 to prevent negatives
+volumeuplog= max(log(volumeup),0)  
+volumedownlog= max(log(volumedown),0) 
+
+netvolume = volumeup - volumedown
+pnetvolume = pvolumeup - pvolumedown
+lognetvolume = volumeuplog - volumedownlog
+
+totalvolume = volumeup + volumedown
+ptotalvolume = pvolumeup + pvolumedown
+
+volumeok = totalvolume > sma(nz(totalvolume[1]), round(lengthMA/2)) //lengthMA or emalength
+
+//for % volume change compared to moving average
+MApvolumeup = nz(myvolume)/ema(fixnan(myvolume[1]), lengthMA)*100 * fractionup
+MApvolumedown = nz(myvolume)/ema(fixnan(myvolume[1]), lengthMA)*100  * fractiondown
+
+//old way to calculate significant levels
+emauptop =      max(ema(highest(volumeup, lengthMA), lengthMA),   highest(volumeup, lengthMA))
+emadownbottom = min(ema(lowest(-volumedown, lengthMA), lengthMA), lowest(-volumedown, lengthMA))
+emaupbottom = highest(ema(lowest(volumeup, lengthMA), lengthMA), lengthMA)
+emadowntop = lowest(ema(highest(-volumedown, lengthMA), lengthMA), lengthMA)
+emalows = lowest(ema(lowest(totalvolume, lengthMA), lengthMA), lengthMA)
+emahighs = highest(ema(highest(totalvolume, lengthMA), lengthMA), lengthMA)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// _ PLOTS
+
+plotchar(myvolume, "myvolume", "", location = location.top)
+plotchar(myvolume2, "myvolume", "", location = location.top)
+
+plotchar(1, "   ~~~~~~~~~~~~~~~~~~~~", location = location.top, color = color.red)
+plotchar(topwick, "topwick", "", location = location.top)
+plotchar(bottomwick, "bottomwick", "", location = location.top)
+plotchar(body, "body", "", location = location.top)
+
+plotchar(2, "   ~~~~~~~~~~~~~~~~~~~~", location = location.top, color = color.red)
+plotchar(fractionup, "fractionup", "", location = location.top)
+plotchar(fractiondown, "fractiondown", "", location = location.top)
+plotchar(volumeup, "volumeup", "", location = location.top)
+plotchar(volumedown, "volumedown", "", location = location.top)
+plotchar(pvolumeup, "pvolumeup", "", location = location.top)
+plotchar(pvolumedown, "pvolumedown", "", location = location.top)
+
+plotchar(3, "   ~~~~~~~~~~~~~~~~~~~~", location = location.top, color = color.red)
+plotchar(volumeuplog, "volumeuplog", "", location = location.top)
+plotchar(volumedownlog, "volumedownlog", "", location = location.top)
+plotchar(netvolume, "netvolume", "", location = location.top)
+plotchar(pnetvolume, "pnetvolume", "", location = location.top)
+plotchar(lognetvolume, "lognetvolume", "", location = location.top)
+plotchar(totalvolume, "totalvolume", "", location = location.top)
+plotchar(ptotalvolume, "ptotalvolume", "", location = location.top)
+
+plotchar(4, "   ~~~~~~~~~~~~~~~~~~~~", location = location.top, color = color.red)
+plotchar(volumeok, "volumeok", "", location = location.top, color = color.yellow)
+plotchar(MApvolumeup, "MApvolumeup", "", location = location.top)
+plotchar(MApvolumedown, "MApvolumedown", "", location = location.top)
+
+plotchar(5, "   ~~~~~~~~~~~~~~~~~~~~", location = location.top, color = color.red)
+plotchar(emauptop, "emauptop", "", location = location.top)
+plotchar(emadownbottom, "emadownbottom", "", location = location.top)
+plotchar(emaupbottom, "emaupbottom", "", location = location.top)
+plotchar(emadowntop, "emadowntop", "", location = location.top)
+plotchar(emalows, "emalows", "", location = location.top)
+plotchar(emahighs, "emahighs", "", location = location.top)

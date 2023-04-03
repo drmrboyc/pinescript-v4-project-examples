@@ -1,0 +1,339 @@
+//@version=4
+strategy("StochRSI Tests", shorttitle="Stoch-RSI Backtester", initial_capital=20000,
+  default_qty_type=strategy.percent_of_equity, default_qty_value=100.0, currency='USD',
+  commission_type=strategy.commission.percent, commission_value=.08, overlay=false)
+
+//////////// _ INPUTS _ ///////////////////////////////////////////////////////////////////////////////////////////// _ INPUTS
+
+//  RSI ENTRY AND EXIT VALUES
+STOCH_RSI_ENTRY         = input(defval=20.0, title='Entry Trigger RSI')
+STOCH_RSI_EXIT          = input(defval=98.0, title='Exit Trigger RSI')
+
+//  STOP LOSS
+USE_STOPLOSS            = input(title="=====  FLAG: Use Stop Loss", defval=false)
+STOPLOSS_PCT            = input(defval=400.0, title='Stop Loss % of ATR')
+STOPLOSS_ATR_LENGTH     = input(defval=14, title='Stop Loss ATR Length', type=input.integer)
+
+//  TRAILING STOP
+USE_ENTRY_TRAILINGSTOP        = input(title="=====  FLAG: Use Trailing Stop at Entry", defval=true)
+ENTRY_TRAILINGSTOP_PCT        = input(defval=200.0, title='Entry Trailing Stop Loss % of ATR')
+ENTRY_TRAILINGSTOP_ATR_LENGTH = input(defval=14, title='Entry Trailing Stop ATR Length', type=input.integer)
+
+//  RSI REBOUND ENTRY
+USE_RSI_REBOUND_ENTRY   = input(title="=====  FLAG: Use RSI Rebound to OPEN Positions............................ ENTRY Order of Execution: (Trigger RSI) -> (Goal RSI) -> (Entry RSI)", defval=true)
+RSI_REBOUND_GOAL_VALUE  = input(defval=10.0, title='Goal RSI Value')
+RSI_REBOUND_NUM_CAND    = input(defval=3, title='# Candles from Goal to Entry', type=input.integer)
+RSI_REBOUND_ENTRY_MIN   = input(defval=31.0, title='Min RSI Value at Entry')
+
+//  RSI EXIT WAIT
+USE_RSI_EXIT_WAIT       = input(title="=====  FLAG: Use RSI Rebound to CLOSE Positions............................ EXIT Order of Execution: (Trigger RSI) -> (Goal RSI)", defval=true)
+RSI_EXIT_WAIT_GOAL      = input(defval=80.0, title='Exit Goal RSI Value')
+RSI_EXIT_TRAIL_START    = input(defval="Trigger Value", title="Trailing Stop Begins At", options=["Trigger Value", "Goal Value"])
+
+//  TRAILING STOP
+USE_TRAILINGSTOP        = input(title="=====  FLAG: Use RSI Exit Trailing Stop", defval=true)
+TRAILINGSTOP_PCT        = input(defval=12.0, title='Exit Trailing Stop Loss % of ATR')
+TRAILINGSTOP_ATR_LENGTH = input(defval=14, title='Exit Trailing Stop ATR Length', type=input.integer)
+
+//  BUY-LOCK
+USE_BUY_LOCK            = input(title="=====  FLAG: Use Buy-Lock", defval=true)
+BUY_LOCK_SIZE           = input(defval=.25, title="Buy-Lock %", minval=0)
+BUY_LOCK_MULTIPLIER     = BUY_LOCK_SIZE * .01
+
+//  WEEKEND TRADING
+USE_WEEKEND_TRADING     = input(title="=====  FLAG: Trade on Weekends", defval=true)
+
+// BACKTESTING DATE RANGE
+USE_CUSTOM_DATE_RANGE   = input(title="=====  FLAG: Use Date Range Only", defval=true)
+START_YEAR              = input(defval=2019, title='Backtest Start Year', type=input.integer)
+START_MONTH             = input(defval=01, title='Backtest Start Month', type=input.integer)
+START_DAY               = input(defval=01, title='Backtest Start Day', type=input.integer)
+END_YEAR                = input(defval=2020, title='Backtest End Year', type=input.integer)
+END_MONTH               = input(defval=01, title='Backtest End Month', type=input.integer)
+END_DAY                 = input(defval=01, title='Backtest End Day', type=input.integer)
+
+//  MAX NUM OF BARS TO RSI
+USE_MAX_BARS_TO_RSI     = input(title="=====  FLAG: Use Max Bars to RSI or Exit", defval=false)
+MAX_BARS_TO_RSI         = input(defval=7, title="Max Bars to RSI", minval=1)
+MAX_BARS_TO_RSI_VALUE   = input(defval=51.0, title="RSI Value to Reach", minval=0)
+
+//  MAX BARS IN TRADE
+USE_MAX_BARS_IN_TRADE   = input(title="=====  FLAG: Use Maximum Bars in Trade", defval=false)
+MAX_BARS_IN_TRADE       = input(defval=11, title="Max Bars In Trade", minval=1)
+
+//  MAX LOSS IN TRADE
+// USE_MAX_LOSS_IN_TRADE   = input(title="=====  FLAG: Use Max Loss (USD) on Trade", defval=false)
+// MAX_LOSS_ON_TRADE       = input(defval=-50, title="Max USD Loss In Trade")
+
+//  MAX GAIN IN TRADE
+USE_MAX_GAIN_IN_TRADE   = input(title="=====  FLAG: Use Profit Target on Trade", defval=false)
+MAX_GAIN_ON_TRADE       = input(defval=200.0, title="Max BTC Gain In Trade")
+
+//  STOCHASTIC RSI INPUTS
+smoothK     = 3         // input(3, minval=1)
+smoothD     = 3         // input(3, minval=1)
+lengthRSI   = 14        // input(14, minval=1)
+lengthStoch = 14        // input(14, minval=1)
+src         = close     // input(close, title="RSI Source")
+
+//////////// _ GLOBAL VARIABLES _ /////////////////////////////////////////////////////////////////////////////////// _ GLOBAL VARIABLES
+
+//  Buy Locking flag
+var bool buyLock = false
+
+//  RSI Entry Rebound
+var bool rsiReboundWaitingForGoal = false
+var bool rsiReboundWaitingToEnter = false
+var int rsiReboundStartCand = 0
+var int rsiReboundGoalCand = 0
+
+//  RSI Entry Wait
+var bool rsiExitWaitingForGoal = false
+var int rsiExitStartCandle = 0
+
+// Set start and end dates for backtest
+testPeriodStart = timestamp(START_YEAR, START_MONTH, START_DAY,00,00)
+testPeriodStop = timestamp(END_YEAR, END_MONTH, END_DAY,00,00)
+
+//////////// _ USER FUNCTIONS _ ///////////////////////////////////////////////////////////////////////////////////// _ USER FUNCTIONS
+
+f_print_buy_label(_txt) =>
+    if (strategy.openprofit > 0)
+        label.new(bar_index, high, _txt, xloc.bar_time, yloc.abovebar, color.green, label.style_triangledown, color.black, size.auto)
+    else
+        label.new(bar_index, high, _txt, xloc.bar_time, yloc.abovebar, color.red, label.style_triangledown, color.black, size.auto)
+
+f_print(_txt) =>
+    var _lbl = label(na)
+    label.delete(_lbl)
+    _lbl := label.new(time + (time-time[1])*3, high, _txt, xloc.bar_time, yloc.price, size = size.large)
+
+//  Handle the logic of exiting a position as it relates to Buy Locking (waiting for a price before exit)
+f_handle_exit() =>
+    l_buyLock = USE_BUY_LOCK and ( high[0] < (strategy.position_avg_price - (strategy.position_avg_price * BUY_LOCK_MULTIPLIER)) )
+    if (not l_buyLock)
+        strategy.close("Long1")
+    _return = (l_buyLock ? true : false)
+
+//////////// _ CALCULATIONS _ /////////////////////////////////////////////////////////////////////////////////////// _ CALCULATIONS
+
+//  Stochastic RSI
+rsi1 = rsi(src, lengthRSI)
+K = sma(stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK)
+max_bars_back(K, 100)
+D = sma(K, smoothD)
+
+//  Session trading times
+friday_close = time(timeframe.period, "2130-0000:6")
+monday_open = time(timeframe.period, "0000-1330:2")
+weekends = time(timeframe.period, "0000-0000:71")
+out_of_session = friday_close or monday_open or weekends
+
+//  Highest RSI since trade openend. - Used by the _ EXIT : MAX NUM BARS TO RSI
+int since_pos_open = barssince(strategy.opentrades[0] > strategy.opentrades[1])
+var RSIEntryGoalWasReached = 0.0
+
+if (strategy.opentrades <= 0)
+    RSIEntryGoalWasReached := 0
+
+if (strategy.opentrades > 0)
+    if (RSIEntryGoalWasReached)
+        RSIEntryGoalWasReached := 1
+    else
+        if (since_pos_open <= MAX_BARS_TO_RSI and K >= MAX_BARS_TO_RSI_VALUE)
+            RSIEntryGoalWasReached := 1
+
+//  ATR for Stop Loss & Trailing Stop
+stopLossSize = (STOPLOSS_PCT * .01) * atr(STOPLOSS_ATR_LENGTH)
+trailingStopSize = (TRAILINGSTOP_PCT * .01) * atr(TRAILINGSTOP_ATR_LENGTH)
+entryTrailingStopSize = (ENTRY_TRAILINGSTOP_PCT * .01) * atr(ENTRY_TRAILINGSTOP_ATR_LENGTH)
+
+//f_print("Multiplier = " + tostring(timeframe.multiplier) + "\nPeriod = " + timeframe.period + "\nHigh = " + tostring(high))
+
+//int bars_to_check = min(since_pos_open, since_pos_open - MAX_BARS_TO_RSI)
+//int last_bar_for_rsi = min(bar_index, bar_pos_open + MAX_BARS_TO_RSI)
+//int since_rsi_over = barssince(K > 40)
+//int bar_rsi_over = valuewhen(K > 40, bar_index, 0)
+//int rsi_over_since_pos = since_rsi_over - since_pos_open
+//int rsi_reached_goal = (rsi_over_since_pos >= 0 and rsi_over_since_pos <= MAX_BARS_TO_RSI ? 1 : 0)
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ BUY-LOCK RELEASE
+
+buyLockReleaseExit = strategy.opentrades > 0 and buyLock and high[0] >= (strategy.position_avg_price - (strategy.position_avg_price * BUY_LOCK_MULTIPLIER))
+if (buyLockReleaseExit)
+    buyLock := f_handle_exit()
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ WEEKEND TRADING EXIT
+
+bgcolor(out_of_session ? color.blue : na)
+
+weekendExit = strategy.opentrades > 0 and not USE_WEEKEND_TRADING and out_of_session
+if (weekendExit)
+    buyLock := f_handle_exit()
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ MAX NUM OF BARS TO RSI
+
+maxBarsToRSIExit = strategy.opentrades > 0 and USE_MAX_BARS_TO_RSI and (since_pos_open > MAX_BARS_TO_RSI and RSIEntryGoalWasReached <= 0)
+if (maxBarsToRSIExit)
+    buyLock := f_handle_exit()
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ MAX BARS IN TRADE
+
+maxBarsInTradeExit = strategy.opentrades > 0 and USE_MAX_BARS_IN_TRADE and since_pos_open >= MAX_BARS_IN_TRADE
+if (maxBarsInTradeExit)
+    buyLock := f_handle_exit()
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ NORMAL RSI EXIT
+
+normalRSIExit = strategy.opentrades > 0 and not USE_RSI_EXIT_WAIT  and K[0] >= STOCH_RSI_EXIT
+if (normalRSIExit)
+    buyLock := f_handle_exit()
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ RSI REBOUND EXIT
+
+rsiExitTriggered = strategy.opentrades > 0 and USE_RSI_EXIT_WAIT and K[0] > STOCH_RSI_EXIT
+
+//  Handle Reseting the state if a Trailing Stop pulls us out.
+if (strategy.opentrades <= 0)
+    rsiExitWaitingForGoal := false
+    rsiExitStartCandle := 0
+
+//  If we hit the exit trigger RSI and we're not already waiting for the Goal RSI.
+if (rsiExitTriggered and not rsiExitWaitingForGoal)
+    rsiExitWaitingForGoal := true
+    rsiExitStartCandle := bar_index
+    //  If we are supposed to activate the Trailing Stop at the Trigger RSI, do it.
+    if (USE_TRAILINGSTOP and RSI_EXIT_TRAIL_START == "Trigger Value")
+        strategy.cancel("Exit_STOP")
+        strategy.cancel("Exit_ENTRY_TRAILING_STOP")
+        strategy.exit(id="Exit_TRAILING_STOP", from_entry="Long1", trail_price=close, trail_offset=(trailingStopSize*10), oca_name=strategy.oca.cancel)
+
+//  If we have hit the Goal RSI, either exit or activate the Trailing Stop
+if (rsiExitWaitingForGoal and K[0] <= RSI_EXIT_WAIT_GOAL)
+    rsiExitWaitingForGoal := false
+    rsiExitStartCandle := 0
+    //  If we're not using a Trailing Stop, then exit through the Buy Locking method.
+    if (not USE_TRAILINGSTOP)
+        buyLock := f_handle_exit()
+    //  If we are supposed to activate the trailing Stop at the Goal RSI, do it.
+    if (USE_TRAILINGSTOP and RSI_EXIT_TRAIL_START == "Goal Value")
+        strategy.cancel("Exit_STOP")
+        strategy.cancel("Exit_ENTRY_TRAILING_STOP")
+        strategy.exit(id="Exit_TRAILING_STOP", from_entry="Long1", trail_price=close, trail_offset=(trailingStopSize*10), oca_name=strategy.oca.cancel)
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ MAX LOSS IN TRADE
+
+// maxLossExit = strategy.opentrades > 0 and USE_MAX_LOSS_IN_TRADE and strategy.openprofit <= MAX_LOSS_ON_TRADE
+// if (maxLossExit)
+//     buyLock := f_handle_exit()
+
+// plotchar(maxLossExit, "EXIT - Max Loss in Trade", "", location = location.top, color = color.red)
+
+//////////// _ EXIT _ ///////////////////////////////////////////////////////////////////////////////// _ EXIT _ //// _ MAX GAIN IN TRADE
+
+// maxGainExit = strategy.opentrades > 0 and USE_MAX_GAIN_IN_TRADE and (close[0] - strategy.position_avg_price) >= MAX_GAIN_ON_TRADE
+// if (maxGainExit)
+//     buyLock := f_handle_exit()
+
+// plotchar(maxGainExit, "EXIT - Max Gain in Trade", "", location = location.top, color = color.red)
+
+//////////// _ ENTRY _ /////////////////////////////////////////////////////////////////////////////// _ ENTRY _ //// _ ALL CONDITIONS
+
+//  A flag that turns off if anything invalidates opening a new position. This is used only within the
+//  "ENTRY CONDITIONS" block of code and is used because we cannot skip code in Pine Script.
+canTrade = strategy.opentrades <= 0 ? true : false
+
+//  A flag that turns on if anything invalidates our possible new opening position. This causes
+//  all "waiting for entry" states to reset back to negative and zero's out all counters.
+stateReset = strategy.opentrades <= 0 ? false : true
+
+//  True when we're within a time period that a new position can be openend.
+withinBacktestDates = not USE_CUSTOM_DATE_RANGE or (USE_CUSTOM_DATE_RANGE and time >= testPeriodStart and time <= testPeriodStop)
+withinSession = (USE_WEEKEND_TRADING or not out_of_session) and withinBacktestDates
+
+//  If we're out of session restart all entry states.
+if (not withinSession)
+    canTrade := false
+    stateReset := true
+
+//  True when we're waiting for a rebound to enter.
+waitingForRSIGoal  = USE_RSI_REBOUND_ENTRY and rsiReboundWaitingForGoal
+waitingForRSIEntry = USE_RSI_REBOUND_ENTRY and rsiReboundWaitingToEnter
+
+//  If we are waiting for the RSI Goal.
+if (canTrade and waitingForRSIGoal)
+    //  If this candle went above the RSI Goal, advance the state to Waiting For Entry
+    if (K[0] >= RSI_REBOUND_GOAL_VALUE)
+        canTrade := false
+        rsiReboundWaitingForGoal := false
+        rsiReboundWaitingToEnter := true
+        rsiReboundGoalCand := bar_index
+    else
+        canTrade := false
+
+//  If we hit the goal and we're now waiting for the Entry candle.
+if (canTrade and waitingForRSIEntry)
+    //  If this isn't the Entry Candle, wait until the next candle.
+    if (bar_index < rsiReboundGoalCand + RSI_REBOUND_NUM_CAND)
+        canTrade := false
+    // If this is the Entry Candle but the RSI is too low, cancel the trade.
+    if (bar_index >= rsiReboundGoalCand + RSI_REBOUND_NUM_CAND and K[0] < RSI_REBOUND_ENTRY_MIN)
+        canTrade := false
+        stateReset := true
+
+//  True when the RSI entry level is crossed from above to below.
+rsiCrossedUnderEntryPoint = not na(K[0]) and crossunder(K[0], STOCH_RSI_ENTRY)
+
+//  If we use RSI Rebound and we're not waiting for a triggered entry to validate and we crossed under the RSI Entry.
+if (canTrade and USE_RSI_REBOUND_ENTRY and not rsiReboundWaitingForGoal and not rsiReboundWaitingToEnter)
+    canTrade := false
+    if (rsiCrossedUnderEntryPoint)
+        rsiReboundWaitingForGoal := true
+        rsiReboundStartCand := bar_index
+
+//  If we don't use RSI Rebound and we're not under the RSI entry point.
+if (canTrade and not USE_RSI_REBOUND_ENTRY and not rsiCrossedUnderEntryPoint)
+    canTrade := false
+
+profitTarget = USE_MAX_GAIN_IN_TRADE ? MAX_GAIN_ON_TRADE : na
+stopLoss = USE_STOPLOSS ? stopLossSize : na
+
+canTrade := canTrade and not buyLock
+
+//  If we can trade and we're not in a Buy Lock, open the trade and reset all states.
+if (canTrade)
+    stateReset := true
+    strategy.entry("Long1", comment=" ", long=strategy.long)
+    //  Add a Stop Loss and/or Take Profit.
+    if (USE_MAX_GAIN_IN_TRADE)
+        strategy.exit(id="Exit_PROFIT", from_entry="Long1", profit=(MAX_GAIN_ON_TRADE*10), oca_name=strategy.oca.cancel)
+    if (USE_ENTRY_TRAILINGSTOP)
+        strategy.exit(id="Exit_ENTRY_TRAILING_STOP", from_entry="Long1", trail_price=close, trail_offset=(entryTrailingStopSize*10), oca_name=strategy.oca.cancel)
+    if (USE_STOPLOSS)
+        strategy.exit(id="Exit_STOP", from_entry="Long1", loss=(stopLossSize*10), oca_name=strategy.oca.cancel)
+
+if (stateReset)
+    rsiReboundWaitingForGoal := false
+    rsiReboundWaitingToEnter := false
+    rsiReboundStartCand := 0
+    rsiReboundGoalCand := 0
+
+//////////// _ PLOTS AND DATA WINDOW _ ////////////////////////////////////////////////////////////////////////////// _ PLOTS AND DATA WINDOW
+
+plotchar(buyLock, "Buy Lock Activated", "", location = location.top, color = color.yellow)
+plotchar(rsiExitWaitingForGoal, "Exit Triggered - TS Active", "", location = location.top, color = color.yellow)
+
+plotchar(trailingStopSize, "EXIT - Exit Trail-Stop Size", "", location = location.top, color = color.yellow)
+
+plotchar(atr(STOPLOSS_ATR_LENGTH), "ATR - Stop Loss Length", "", location = location.top, color = color.red)
+plotchar(buyLockReleaseExit, "EXIT - Buy Lock Released", "", location = location.top, color = color.red)
+plotchar(weekendExit, "EXIT - Weekend Session", "", location = location.top, color = color.red)
+plotchar(maxBarsToRSIExit, "EXIT - Max Bars to RSI", "", location = location.top, color = color.red)
+plotchar(maxBarsInTradeExit, "EXIT - Max Bars in Trade", "", location = location.top, color = color.red)
+plotchar(normalRSIExit, "EXIT - Normal RSI", "", location = location.top, color = color.red)
+
+plotchar(entryTrailingStopSize, "ENTRY - Entry Trail-Stop Size", "", location = location.top, color = color.green)
+plotchar(profitTarget, "ENTRY - Profit Target", "", location = location.top, color = color.green)
+plotchar(stopLoss, "ENTRY - Stop Loss", "", location = location.top, color = color.green)
+
+plotchar(RSIEntryGoalWasReached == 1, "RSI-ENTRY Goal Reached", "", location = location.top)
